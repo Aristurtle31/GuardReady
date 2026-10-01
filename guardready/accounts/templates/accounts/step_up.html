@@ -1,0 +1,32 @@
+{% extends "base.html" %}
+{% block title %}Confirm it is you{% endblock %}
+{% block content %}
+<div class="card border-danger narrow-card">
+  <div class="card-body">
+    <h1 class="h4">Confirm it is you</h1>
+    <p>
+      You are about to open the sensitive records of <strong>{{ guard.full_name }}</strong>
+      (medical results and personal details). Enter your password again and give a reason.
+    </p>
+    <p class="small text-muted">
+      This is recorded in the audit log. The records lock again by themselves after a short time.
+    </p>
+
+    <form method="post">
+      {% csrf_token %}
+      <div class="mb-3">
+        <label class="form-label" for="{{ form.password.id_for_label }}">{{ form.password.label }}</label>
+        {{ form.password }}
+        {% for error in form.password.errors %}<div class="text-danger small">{{ error }}</div>{% endfor %}
+      </div>
+      <div class="mb-3">
+        <label class="form-label" for="{{ form.reason.id_for_label }}">{{ form.reason.label }}</label>
+        {{ form.reason }}
+        {% for error in form.reason.errors %}<div class="text-danger small">{{ error }}</div>{% endfor %}
+      </div>
+      <button type="submit" class="btn btn-danger">Unlock</button>
+      <a class="btn btn-link" href="{% url 'guard_profile' guard.pk %}">Cancel</a>
+    </form>
+  </div>
+</div>
+{% endblock %}

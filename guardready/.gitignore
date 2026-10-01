@@ -1,0 +1,8 @@
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# Local database (recreate with migrate + seed_demo)
+db.sqlite3
