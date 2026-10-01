@@ -1,0 +1,95 @@
+{% extends "base.html" %}
+{% load guard_tags %}
+{% block title %}{{ guard.full_name }}{% endblock %}
+{% block content %}
+<div class="d-flex flex-wrap align-items-center gap-2 mb-3">
+  <h1 class="h3 mb-0">{{ guard.full_name }}</h1>
+  <span class="badge text-bg-{{ readiness|badge }} fs-6">{{ readiness }}</span>
+</div>
+
+<div class="row g-3 mb-3">
+  <div class="col-md-6">
+    <div class="card h-100">
+      <div class="card-header">Guard information</div>
+      <table class="table table-sm mb-0">
+        <tr><th>Employee no.</th><td>{{ guard.employee_no }}</td></tr>
+        <tr><th>Guard type</th><td>{{ guard.guard_type }}</td></tr>
+        <tr><th>Rank</th><td>{{ guard.rank }}</td></tr>
+        <tr><th>Position</th><td>{{ guard.position }}</td></tr>
+        <tr><th>Date hired</th><td>{{ guard.date_hired|date:"M d, Y" }}</td></tr>
+        <tr><th>Contact number</th><td class="masked">{{ guard.masked_contact }}</td></tr>
+        <tr><th>Current post</th><td>{% if assignment %}{{ assignment.post }} since {{ assignment.start_date|date:"M d, Y" }}{% else %}Not posted{% endif %}</td></tr>
+      </table>
+    </div>
+  </div>
+  <div class="col-md-6">
+    <div class="card h-100">
+      <div class="card-header">Readiness</div>
+      <div class="card-body">
+        <p class="mb-2">Status: <span class="badge text-bg-{{ readiness|badge }}">{{ readiness }}</span></p>
+        <p class="mb-2">
+          Earliest expiry:
+          {% if earliest %}{{ earliest.doc_type }}, {{ earliest.expires|date:"M d, Y" }}{% else %}None on file{% endif %}
+        </p>
+        {% if block_reasons %}
+          <p class="mb-1 text-danger fw-semibold">Cannot be posted because:</p>
+          <ul class="mb-0">
+            {% for reason in block_reasons %}<li>{{ reason }}</li>{% endfor %}
+          </ul>
+        {% else %}
+          <p class="mb-0 text-success">Can be posted.</p>
+        {% endif %}
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="card mb-3">
+  <div class="card-header">Documents</div>
+  <div class="table-responsive">
+    <table class="table table-sm mb-0">
+      <thead>
+        <tr>
+          <th>Document</th><th>Number</th><th>Issuer</th><th>Issued</th>
+          <th>Expires</th><th>Days left</th><th>Status</th><th>Result</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for row in rows %}
+          <tr>
+            <td>{{ row.document }}</td>
+            <td>{{ row.number }}</td>
+            <td>{{ row.issuer }}</td>
+            <td class="text-nowrap">{{ row.issued }}</td>
+            <td class="text-nowrap">{{ row.expires }}</td>
+            <td>{{ row.days_left }}</td>
+            <td><span class="badge text-bg-{{ row.status|badge }}">{{ row.status }}</span></td>
+            <td>{% if row.result == "Locked" %}<span class="text-danger">Locked</span>{% else %}{{ row.result }}{% endif %}</td>
+          </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<div class="card sensitive-box{% if unlocked %} unlocked{% endif %}">
+  <div class="card-body">
+    <h2 class="h5">Sensitive records</h2>
+    {% if unlocked %}
+      <p class="text-danger">
+        Unlocked. Locks again at {{ locks_at|time:"g:i:s A" }} ({{ seconds_left }} seconds left).
+      </p>
+      <table class="table table-sm mb-0">
+        {% for label, value in personal.items %}
+          <tr><th>{{ label }}</th><td>{{ value }}</td></tr>
+        {% endfor %}
+      </table>
+    {% elif can_unlock %}
+      <p>Medical results, date of birth, home address, full contact number, and government numbers are hidden.</p>
+      <a class="btn btn-danger btn-sm" href="{% url 'step_up' guard.pk %}">Unlock with password</a>
+    {% else %}
+      <p class="mb-0 text-muted">Hidden. Your role cannot unlock sensitive records.</p>
+    {% endif %}
+  </div>
+</div>
+{% endblock %}

@@ -1,0 +1,48 @@
+/* GuardReady: a few small styles on top of Bootstrap 5. */
+
+body {
+  background-color: #f4f6f8;
+}
+
+.narrow-card {
+  max-width: 480px;
+  margin: 2rem auto;
+}
+
+/* Dashboard number cards */
+.stat-card {
+  text-decoration: none;
+}
+
+.stat-card:hover {
+  box-shadow: 0 0.25rem 0.75rem rgba(0, 0, 0, 0.15);
+}
+
+.stat-number {
+  font-size: 2.5rem;
+  font-weight: 700;
+}
+
+/* The box that holds sensitive data */
+.sensitive-box {
+  border: 2px dashed #dc3545;
+  background-color: #fff;
+}
+
+.sensitive-box.unlocked {
+  border-style: solid;
+}
+
+/* Masked values like *******4567 */
+.masked {
+  font-family: monospace;
+  letter-spacing: 0.05em;
+}
+
+.table th {
+  white-space: nowrap;
+}
+
+.audit-table td {
+  font-size: 0.85rem;
+}

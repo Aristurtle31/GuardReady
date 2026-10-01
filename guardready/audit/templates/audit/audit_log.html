@@ -1,0 +1,88 @@
+{% extends "base.html" %}
+{% block title %}Audit log{% endblock %}
+{% block content %}
+<h1 class="h3 mb-1">Audit log</h1>
+<p class="text-muted small">Append only. Entries can never be edited or deleted.</p>
+
+<form method="get" class="row g-2 align-items-end mb-3">
+  <div class="col-sm-3">
+    <label class="form-label small">User</label>
+    <select name="user" class="form-select form-select-sm">
+      <option value="">All users</option>
+      {% for name in usernames %}
+        <option value="{{ name }}" {% if name == chosen_user %}selected{% endif %}>{{ name }}</option>
+      {% endfor %}
+    </select>
+  </div>
+  <div class="col-sm-2">
+    <label class="form-label small">Action</label>
+    <select name="action" class="form-select form-select-sm">
+      <option value="">All actions</option>
+      {% for action in actions %}
+        <option value="{{ action }}" {% if action == chosen_action %}selected{% endif %}>{{ action }}</option>
+      {% endfor %}
+    </select>
+  </div>
+  <div class="col-sm-3">
+    <label class="form-label small">Date</label>
+    <input type="date" name="date" value="{{ chosen_date }}" class="form-control form-control-sm">
+  </div>
+  <div class="col-sm-2">
+    <div class="form-check">
+      <input class="form-check-input" type="checkbox" name="sensitive" id="sensitive" {% if sensitive_only %}checked{% endif %}>
+      <label class="form-check-label small" for="sensitive">Sensitive only</label>
+    </div>
+  </div>
+  <div class="col-sm-2">
+    <button type="submit" class="btn btn-primary btn-sm">Filter</button>
+    <a href="{% url 'audit_log' %}" class="btn btn-link btn-sm">Clear</a>
+  </div>
+</form>
+
+<p class="small text-muted">{{ page.paginator.count }} entries found.</p>
+
+<div class="table-responsive">
+  <table class="table table-sm table-striped bg-white audit-table">
+    <thead>
+      <tr>
+        <th>ID</th><th>Time</th><th>User</th><th>Role</th><th>Session</th><th>IP</th>
+        <th>Action</th><th>Target</th><th>Outcome</th><th>Sensitive</th><th>Details</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for entry in page %}
+        <tr>
+          <td>{{ entry.id }}</td>
+          <td>{{ entry.timestamp|date:"M d, Y g:i:s A" }}</td>
+          <td>{{ entry.username }}</td>
+          <td>{{ entry.role }}</td>
+          <td class="masked">{{ entry.short_session }}</td>
+          <td>{{ entry.ip_address|default:"" }}</td>
+          <td>{{ entry.action }}</td>
+          <td>{{ entry.target }}</td>
+          <td>
+            {% if entry.outcome == "Denied" %}<span class="badge text-bg-danger">Denied</span>
+            {% else %}<span class="badge text-bg-success">Success</span>{% endif %}
+          </td>
+          <td>{% if entry.sensitive %}<span class="badge text-bg-warning">Yes</span>{% endif %}</td>
+          <td>{{ entry.details }}</td>
+        </tr>
+      {% empty %}
+        <tr><td colspan="11" class="text-muted">No entries match these filters.</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+
+{% if page.paginator.num_pages > 1 %}
+  <nav class="d-flex gap-2 align-items-center">
+    {% if page.has_previous %}
+      <a class="btn btn-outline-secondary btn-sm" href="?{{ filter_query }}&page={{ page.previous_page_number }}">Newer</a>
+    {% endif %}
+    <span class="small">Page {{ page.number }} of {{ page.paginator.num_pages }}</span>
+    {% if page.has_next %}
+      <a class="btn btn-outline-secondary btn-sm" href="?{{ filter_query }}&page={{ page.next_page_number }}">Older</a>
+    {% endif %}
+  </nav>
+{% endif %}
+{% endblock %}

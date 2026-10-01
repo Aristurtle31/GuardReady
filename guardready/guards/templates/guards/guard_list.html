@@ -1,0 +1,57 @@
+{% extends "base.html" %}
+{% load guard_tags %}
+{% block title %}Guards{% endblock %}
+{% block content %}
+<h1 class="h3 mb-3">Guards</h1>
+
+<form method="get" class="row g-2 mb-3">
+  <div class="col-sm-6">
+    <input type="text" name="q" value="{{ query }}" class="form-control" placeholder="Search by name or employee no.">
+  </div>
+  <div class="col-sm-3">
+    <select name="status" class="form-select">
+      <option value="">Any readiness</option>
+      {% for level in levels %}
+        <option value="{{ level }}" {% if level == readiness %}selected{% endif %}>{{ level }}</option>
+      {% endfor %}
+    </select>
+  </div>
+  <div class="col-sm-3">
+    <button type="submit" class="btn btn-primary">Search</button>
+    <a href="{% url 'guard_list' %}" class="btn btn-link">Clear</a>
+  </div>
+</form>
+
+<div class="table-responsive">
+  <table class="table table-hover bg-white">
+    <thead>
+      <tr>
+        <th>Employee no.</th>
+        <th>Name</th>
+        <th>Guard type</th>
+        <th>Rank</th>
+        <th>Current post</th>
+        <th>Readiness</th>
+        <th>Earliest expiry</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for guard in guards %}
+        {% with status=guard.readiness earliest=guard.earliest_expiry assignment=guard.current_assignment %}
+          <tr>
+            <td>{{ guard.employee_no }}</td>
+            <td><a href="{% url 'guard_profile' guard.pk %}">{{ guard.full_name }}</a></td>
+            <td>{{ guard.guard_type }}</td>
+            <td>{{ guard.rank }}</td>
+            <td>{% if assignment %}{{ assignment.post }}{% else %}<span class="text-muted">Not posted</span>{% endif %}</td>
+            <td><span class="badge text-bg-{{ status|badge }}">{{ status }}</span></td>
+            <td>{% if earliest %}{{ earliest.doc_type }}, {{ earliest.expires|date:"M d, Y" }}{% endif %}</td>
+          </tr>
+        {% endwith %}
+      {% empty %}
+        <tr><td colspan="7" class="text-muted">No guards match your search.</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endblock %}

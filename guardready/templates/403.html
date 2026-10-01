@@ -1,0 +1,12 @@
+{% extends "base.html" %}
+{% block title %}Access refused{% endblock %}
+{% block content %}
+<div class="card border-danger narrow-card">
+  <div class="card-body">
+    <h1 class="h4 text-danger">Access refused</h1>
+    <p class="mb-2">{{ exception|default:"You do not have permission to open this page." }}</p>
+    <p class="text-muted small">This attempt has been recorded in the audit log.</p>
+    <a class="btn btn-secondary btn-sm" href="{% url 'home' %}">Back to my start page</a>
+  </div>
+</div>
+{% endblock %}

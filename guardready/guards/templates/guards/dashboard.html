@@ -1,0 +1,30 @@
+{% extends "base.html" %}
+{% block title %}Dashboard{% endblock %}
+{% block content %}
+<h1 class="h3 mb-3">Dashboard</h1>
+
+<div class="row g-3">
+  <div class="col-6 col-md-3">
+    <a class="card stat-card h-100 text-dark" href="{% url 'guard_list' %}">
+      <div class="card-body">
+        <div class="text-muted">Total guards</div>
+        <div class="stat-number">{{ total }}</div>
+      </div>
+    </a>
+  </div>
+  {% for card in cards %}
+    <div class="col-6 col-md-3">
+      <a class="card stat-card h-100 border-{{ card.color }} text-dark" href="{% url 'guard_list' %}?status={{ card.label|urlencode }}">
+        <div class="card-body">
+          <div class="text-{{ card.color }} fw-semibold">{{ card.label }}</div>
+          <div class="stat-number">{{ card.count }}</div>
+        </div>
+      </a>
+    </div>
+  {% endfor %}
+</div>
+
+<p class="text-muted small mt-3">
+  Click a number to see those guards. "Expiring soon" means a document expires within 60 days.
+</p>
+{% endblock %}
