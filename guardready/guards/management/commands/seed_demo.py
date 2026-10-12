@@ -17,7 +17,7 @@ from django.core.management.base import BaseCommand
 from django.db import transaction
 from django.utils import timezone
 
-from accounts.roles import ADMIN, COMMANDER, GUARD, ROLE_PERMISSIONS
+from accounts.roles import ADMIN, GUARD, ROLE_PERMISSIONS
 from deployment.constants import DAY_SHIFT, NIGHT_SHIFT
 from deployment.models import Assignment, ClientSite, Post
 from guards import constants as c
@@ -34,7 +34,6 @@ from reports.models import AttendanceRecord, Evaluation
 # username, password, role, first name, last name
 ACCOUNTS = [
     ("admin", "admin123", ADMIN, "Liza", "Ramos"),
-    ("commander", "commander123", COMMANDER, "Rogelio", "Tan"),
     ("guard1", "guard123", GUARD, "Juan", "Dela Cruz"),
 ]
 
@@ -331,7 +330,7 @@ class Command(BaseCommand):
         for site_name, post_name, started, ended in data["postings"]:
             post = self.posts[(site_name, post_name)]
             assignment = Assignment.start(
-                guard, post, self.users["commander"], start_date=self.days_ago(started)
+                guard, post, self.users["admin"], start_date=self.days_ago(started)
             )
             if ended is not None:
                 assignment.close(self.days_ago(ended))
@@ -352,7 +351,7 @@ class Command(BaseCommand):
                 scheduled_start=start,
                 time_in=None if absent else make_time_in(chance, day, start, late),
                 absent=absent,
-                recorded_by=self.users["commander"],
+                recorded_by=self.users["admin"],
             )
 
     def last_duty_days(self, guard):
@@ -371,13 +370,12 @@ class Command(BaseCommand):
         return days[:DUTY_DAYS]
 
     def create_evaluations(self, guard, data):
-        for index, (days_ago, scores, remarks) in enumerate(data["evaluations"]):
+        for days_ago, scores, remarks in data["evaluations"]:
             discipline, attitude, appearance, honesty, alertness = scores
-            evaluator = self.users["admin"] if index == 0 else self.users["commander"]
             Evaluation.objects.create(
                 guard=guard,
                 date=self.days_ago(days_ago),
-                evaluator=evaluator,
+                evaluator=self.users["admin"],
                 discipline=discipline,
                 attitude=attitude,
                 appearance=appearance,

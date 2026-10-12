@@ -57,7 +57,10 @@ def can_view_guard(user, guard):
 
 
 def can_step_up(user, guard):
-    """Who may unlock this guard's sensitive data. Commanders never can."""
+    """
+    Who may unlock this guard's sensitive data. Decided by the
+    step_up_sensitive permission, never by the role name.
+    """
     if not user.has_perm("guards.step_up_sensitive"):
         return False
     return can_view_guard(user, guard)

@@ -87,8 +87,6 @@
     {% elif can_unlock %}
       <p>Medical results, date of birth, home address, full contact number, and government numbers are hidden.</p>
       <a class="btn btn-danger btn-sm" href="{% url 'step_up' guard.pk %}">Unlock with password</a>
-    {% else %}
-      <p class="mb-0 text-muted">Hidden. Your role cannot unlock sensitive records.</p>
     {% endif %}
   </div>
 </div>
