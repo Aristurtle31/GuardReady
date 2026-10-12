@@ -228,6 +228,7 @@ def missing_row(doc_type):
         "days_left": "",
         "status": c.NOT_ON_FILE,
         "result": "",
+        "on_file": False,
     }
 
 
@@ -277,6 +278,15 @@ class Credential(models.Model):
         self.__class__ = CREDENTIAL_CLASSES[self.kind]
         return self
 
+    @classmethod
+    def for_document(cls, doc_type):
+        """
+        FACTORY: an unsaved credential of the right proxy class for this
+        document. Forms use it to ask questions like uses_result() before the
+        document is on file. It is never saved.
+        """
+        return cls(kind=c.DOCUMENT_KINDS[doc_type], doc_type=doc_type).typed()
+
     # --- Methods the proxy classes override (POLYMORPHISM) ---
 
     def validity_months(self):
@@ -304,6 +314,7 @@ class Credential(models.Model):
             "days_left": self.days_left(),
             "status": self.status(),
             "result": "Not applicable",
+            "on_file": True,
         }
 
     # --- Status ---

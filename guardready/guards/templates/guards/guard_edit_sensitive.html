@@ -1,0 +1,28 @@
+{% extends "base.html" %}
+{% block title %}Edit personal and government details{% endblock %}
+{% block content %}
+<h1 class="h3 mb-1">Edit personal and government details</h1>
+<p class="text-muted mb-1">{{ title }}</p>
+<p class="text-danger small mb-3">
+  Unlocked until {{ locks_at|time:"g:i:s A" }} ({{ seconds_left }} seconds left).
+  If it locks before you save, the save is refused and you need to unlock again.
+</p>
+
+<form method="post" novalidate>
+  {% csrf_token %}
+  {% for form in forms %}
+    <section class="card sensitive-box unlocked mb-3">
+      <div class="card-header fw-semibold">{{ form.title }}</div>
+      <div class="card-body">
+        {% include "guards/_section.html" %}
+      </div>
+    </section>
+  {% endfor %}
+  <p class="small text-muted">
+    To clear a value, empty its box. The audit log records which fields
+    changed, never the values.
+  </p>
+  <button type="submit" class="btn btn-danger">Save personal and government details</button>
+  <a class="btn btn-link" href="{% url 'guard_profile' guard_pk %}">Cancel</a>
+</form>
+{% endblock %}

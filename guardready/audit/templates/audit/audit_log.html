@@ -4,6 +4,11 @@
 <h1 class="h3 mb-1">Audit log</h1>
 <p class="text-muted small">Append only. Entries can never be edited or deleted.</p>
 
+<div class="d-flex flex-wrap gap-2 mb-3">
+  <a class="btn btn-outline-primary btn-sm" href="{% url 'compliance_offices' %}">Print Government Report</a>
+  <a class="btn btn-outline-primary btn-sm" href="{% url 'compliance_request' 'client' %}">Print Client Report</a>
+</div>
+
 <form method="get" class="row g-2 align-items-end mb-3">
   <div class="col-sm-3">
     <label class="form-label small">User</label>

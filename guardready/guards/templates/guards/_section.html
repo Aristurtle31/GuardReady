@@ -1,0 +1,14 @@
+{# One section of a form: its own errors first, then its fields in a grid. #}
+{% for error in form.non_field_errors %}
+  <div class="alert alert-danger py-2 small mb-2">{{ error }}</div>
+{% endfor %}
+<div class="row g-3">
+  {% for field in form %}
+    <div class="{% if field.widget_type == 'textarea' %}col-12{% else %}col-md-4{% endif %}">
+      <label class="form-label" for="{{ field.id_for_label }}">{{ field.label }}</label>
+      {{ field }}
+      {% if field.help_text %}<div class="form-text">{{ field.help_text }}</div>{% endif %}
+      {% for error in field.errors %}<div class="text-danger small">{{ error }}</div>{% endfor %}
+    </div>
+  {% endfor %}
+</div>

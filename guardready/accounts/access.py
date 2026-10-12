@@ -9,6 +9,7 @@ from functools import wraps
 
 from django.contrib.auth.views import redirect_to_login
 from django.core.exceptions import PermissionDenied
+from django.urls import reverse
 
 
 def deny(request, reason, target_type="", target_id=""):
@@ -20,6 +21,21 @@ def deny(request, reason, target_type="", target_id=""):
     if target_type:
         request.audit_target = (target_type, str(target_id))
     raise PermissionDenied(reason)
+
+
+def deny_until_step_up(request, guard):
+    """
+    Refuse a page that shows or changes a guard's sensitive data while no
+    step-up is active for him. It is logged as DENY like any refusal, and the
+    403 page shows the step-up link.
+    """
+    request.step_up_url = reverse("step_up", args=[guard.pk])
+    deny(
+        request,
+        "Unlock this guard's sensitive records with your password first.",
+        "Guard",
+        guard.pk,
+    )
 
 
 def access_required(*permissions):

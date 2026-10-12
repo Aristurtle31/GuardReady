@@ -5,6 +5,9 @@
 <div class="d-flex flex-wrap align-items-center gap-2 mb-3">
   <h1 class="h3 mb-0">{{ guard.full_name }}</h1>
   <span class="badge text-bg-{{ readiness|badge }} fs-6">{{ readiness }}</span>
+  {% if perms.guards.change_guard %}
+    <a class="btn btn-outline-primary btn-sm ms-auto" href="{% url 'edit_guard' guard.pk %}">Edit guard</a>
+  {% endif %}
 </div>
 
 <div class="row g-3 mb-3">
@@ -52,6 +55,7 @@
         <tr>
           <th>Document</th><th>Number</th><th>Issuer</th><th>Issued</th>
           <th>Expires</th><th>Days left</th><th>Status</th><th>Result</th>
+          {% if perms.guards.manage_credentials %}<th>Action</th>{% endif %}
         </tr>
       </thead>
       <tbody>
@@ -65,6 +69,15 @@
             <td>{{ row.days_left }}</td>
             <td><span class="badge text-bg-{{ row.status|badge }}">{{ row.status }}</span></td>
             <td>{% if row.result == "Locked" %}<span class="text-danger">Locked</span>{% else %}{{ row.result }}{% endif %}</td>
+            {% if perms.guards.manage_credentials %}
+              <td class="text-nowrap">
+                {% if row.on_file %}
+                  <a class="btn btn-outline-secondary btn-sm" href="{% url 'renew_document' guard.pk row.document|slugify %}">Renew or correct</a>
+                {% else %}
+                  <a class="btn btn-primary btn-sm" href="{% url 'add_document' guard.pk row.document|slugify %}">Add</a>
+                {% endif %}
+              </td>
+            {% endif %}
           </tr>
         {% endfor %}
       </tbody>
@@ -84,6 +97,9 @@
           <tr><th>{{ label }}</th><td>{{ value }}</td></tr>
         {% endfor %}
       </table>
+      {% if perms.guards.change_guard %}
+        <a class="btn btn-danger btn-sm mt-3" href="{% url 'edit_guard_sensitive' guard.pk %}">Edit personal and government details</a>
+      {% endif %}
     {% elif can_unlock %}
       <p>Medical results, date of birth, home address, full contact number, and government numbers are hidden.</p>
       <a class="btn btn-danger btn-sm" href="{% url 'step_up' guard.pk %}">Unlock with password</a>

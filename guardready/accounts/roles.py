@@ -15,6 +15,8 @@ ROLE_PERMISSIONS = {
         "guards.view_all_guards",
         "guards.step_up_sensitive",
         "guards.add_guard",
+        # Edit Guard (added Oct 12, 2026). delete_guard is never given to anyone.
+        "guards.change_guard",
         "guards.manage_credentials",
         "deployment.assign_guard",
         "reports.record_performance",

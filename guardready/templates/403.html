@@ -6,6 +6,9 @@
     <h1 class="h4 text-danger">Access refused</h1>
     <p class="mb-2">{{ exception|default:"You do not have permission to open this page." }}</p>
     <p class="text-muted small">This attempt has been recorded in the audit log.</p>
+    {% if request.step_up_url %}
+      <a class="btn btn-danger btn-sm" href="{{ request.step_up_url }}">Unlock with password</a>
+    {% endif %}
     <a class="btn btn-secondary btn-sm" href="{% url 'home' %}">Back to my start page</a>
   </div>
 </div>

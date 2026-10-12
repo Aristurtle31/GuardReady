@@ -1,6 +1,17 @@
-"""Small service functions for guards. Business rules stay in the models."""
+"""
+Service functions for guards. Business rules stay in the models.
 
+The save functions below only coordinate: they call the model methods
+(add_credential(), renew(), save()) and write the audit entries, all inside
+one transaction. If any step fails, nothing is saved, not even the log entry.
+"""
+
+from django.db import transaction
 from django.db.models import Q
+
+from audit.changes import ChangeSummary
+from audit.models import AuditEntry
+from audit.services import log_event
 
 from . import constants as c
 from .models import Guard
@@ -36,3 +47,99 @@ def readiness_counts(guards):
     for guard in guards:
         counts[guard.readiness()] += 1
     return counts
+
+
+# ---------------------------------------------------------------------------
+# Saving guards and documents (Add Guard, Edit Guard, Add, Renew or correct)
+# ---------------------------------------------------------------------------
+
+
+@transaction.atomic
+def save_new_guard(request, page):
+    """
+    Save a new guard and every document section that was filled in, in one
+    transaction, so a failed save never leaves half a guard. Logs one CREATE
+    for the guard and one for each document.
+    check_expiry() does not exist yet (Stage 2), so no notices are made here.
+    """
+    guard = page.new_guard()
+    guard.save()
+    summary = page.describe_new_guard()
+    log_event(
+        request,
+        AuditEntry.CREATE,
+        "Guard",
+        guard.pk,
+        sensitive=summary.sensitive,
+        details=f"Added {guard.summary()}. {summary}.",
+    )
+    for form in page.filled_documents():
+        save_new_document(request, guard, form)
+    return guard
+
+
+@transaction.atomic
+def save_new_document(request, guard, form):
+    """Put one document on file through Guard.add_credential(), and log a CREATE."""
+    credential = guard.add_credential(form.doc_type, **form.values())
+    summary = form.describe_new(ChangeSummary())
+    log_event(
+        request,
+        AuditEntry.CREATE,
+        "Credential",
+        credential.pk,
+        sensitive=summary.sensitive,
+        details=f"Added {credential.doc_type} for {guard.summary()}. {summary}.",
+    )
+    return credential
+
+
+@transaction.atomic
+def save_renewal(request, credential, form):
+    """
+    Renew or correct one document through renew() (MedicalCert.renew() when
+    the form has a result). renew() saves the old values in a
+    CredentialVersion first. Logs an UPDATE with the changed fields.
+    """
+    summary = form.describe_changes(ChangeSummary())
+    credential.renew(by_user=request.user, **form.values())
+    log_event(
+        request,
+        AuditEntry.UPDATE,
+        "Credential",
+        credential.pk,
+        sensitive=summary.sensitive,
+        details=(
+            f"Renewed or corrected {credential.doc_type} of {credential.guard.summary()}. "
+            f"{summary}. The old values are kept in the history."
+        ),
+    )
+    return summary
+
+
+@transaction.atomic
+def save_guard_edit(request, guard, forms, what):
+    """
+    Apply an edit made with one or more section forms, then log one UPDATE
+    that lists the changed fields. Sensitive fields are named without their
+    values. If nothing changed, nothing is saved or logged.
+    Returns the ChangeSummary, so the view can name the changed fields.
+    """
+    summary = ChangeSummary()
+    for form in forms:
+        form.describe_changes(summary)
+    if not summary:
+        return summary
+
+    for form in forms:
+        form.save(commit=False)  # puts the new values on this guard
+    guard.save()
+    log_event(
+        request,
+        AuditEntry.UPDATE,
+        "Guard",
+        guard.pk,
+        sensitive=summary.sensitive,
+        details=f"Edited the {what} of {guard.summary()}. {summary}.",
+    )
+    return summary

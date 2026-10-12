@@ -15,12 +15,14 @@ from accounts.roles import ADMIN, GUARD, ROLE_PERMISSIONS
 from audit.models import AuditEntry
 from guards.models import Guard
 
-# Admin/HR must keep exactly these permissions.
+# Admin/HR must keep exactly these permissions. change_guard was added on
+# Oct 12, 2026 for Edit Guard.
 ADMIN_PERMISSIONS = [
     "guards.view_dashboard",
     "guards.view_all_guards",
     "guards.step_up_sensitive",
     "guards.add_guard",
+    "guards.change_guard",
     "guards.manage_credentials",
     "deployment.assign_guard",
     "reports.record_performance",

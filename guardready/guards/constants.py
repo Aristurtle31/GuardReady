@@ -6,6 +6,8 @@ The validity periods are PLACEHOLDERS from the handoff spec. They must be
 confirmed against current PNP SOSIA rules before the final version.
 """
 
+from django.utils.text import slugify
+
 # Credential kinds. Each kind has its own proxy model.
 LICENSE = "License"
 CLEARANCE = "Clearance"
@@ -35,6 +37,10 @@ REQUIRED_DOCUMENTS = [
     BASIC_COURSE,
 ]
 DOCUMENT_CHOICES = [(doc, doc) for doc in REQUIRED_DOCUMENTS]
+
+# The name of each document in a URL, like "nbi-clearance". The profile
+# template makes the same name with Django's slugify filter.
+DOCUMENT_SLUGS = {slugify(doc): doc for doc in REQUIRED_DOCUMENTS}
 
 # Which kind (proxy model) each document belongs to.
 DOCUMENT_KINDS = {
@@ -78,6 +84,17 @@ NOT_ON_FILE = "Not on file"
 CLEARED = "Cleared"
 NOT_CLEARED = "Not cleared"
 READINESS_LEVELS = [CLEARED, EXPIRING_SOON, NOT_CLEARED]
+
+# Sensitive guard fields (RA 10173). They are shown and edited only after a
+# step-up, and the audit log writes their names, never their values.
+PERSONAL_FIELDS = ["birth_date", "contact_number", "home_address"]
+GOVERNMENT_NUMBER_FIELDS = ["sss_number", "tin_number", "philhealth_number"]
+
+# Contact number, SSS, TIN and PhilHealth: digits, spaces and dashes, with an
+# optional + at the start, and at least one digit. No official number format
+# is checked. Ask before adding one.
+NUMBER_TEXT_PATTERN = r"^\+?[0-9 -]*[0-9][0-9 -]*$"
+NUMBER_TEXT_MESSAGE = "Use only digits, spaces and dashes. A + is allowed at the start."
 
 # Guard types. Placeholder list, to be confirmed with the agency.
 GUARD_TYPES = [
