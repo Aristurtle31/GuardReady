@@ -1,7 +1,9 @@
-"""Small date helpers used by the models, the seed data, and the forms."""
+"""Small date helpers used by the models, the seed data, the forms, and the reports."""
 
 import calendar
 from datetime import date
+
+from django.utils import timezone
 
 
 def add_months(start, months):
@@ -21,3 +23,27 @@ def nice_date(value):
     if value is None:
         return ""
     return value.strftime("%b %d, %Y")
+
+
+def long_date(value):
+    """
+    Format a date like October 12, 2026, for printed reports.
+    Built by hand because "%-d" (day without a leading zero) fails on Windows.
+    Returns an empty string for None.
+    """
+    if value is None:
+        return ""
+    return f"{value:%B} {value.day}, {value.year}"
+
+
+def long_datetime(value):
+    """
+    Format a date and time in Philippine time (settings.TIME_ZONE), like
+    October 12, 2026, 3:05:09 PM. Returns an empty string for None.
+    """
+    if value is None:
+        return ""
+    local = timezone.localtime(value)
+    hour = local.hour % 12 or 12
+    half_of_day = "AM" if local.hour < 12 else "PM"
+    return f"{long_date(local.date())}, {hour}:{local:%M:%S} {half_of_day}"

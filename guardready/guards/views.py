@@ -1,19 +1,22 @@
 """
-Dashboard, guard list, and guard profile.
+Dashboard, guard list, add guard, and guard profile.
 
 Views only check access, call model methods, and render a template.
 """
 
 from datetime import timedelta
 
+from django.contrib import messages
 from django.shortcuts import get_object_or_404, redirect, render
 from django.utils import timezone
 
 from accounts.access import access_required, can_step_up, can_view_guard, deny, own_guard
 from accounts.stepup import is_unlocked, seconds_left
-from audit.services import mark_target
+from audit.models import AuditEntry
+from audit.services import log_event, mark_target
 
 from . import constants as c
+from .forms import GuardForm
 from .models import Guard
 from .services import all_guards, filter_by_readiness, readiness_counts, search_guards
 
@@ -41,6 +44,45 @@ def guard_list(request):
         "levels": c.READINESS_LEVELS,
     }
     return render(request, "guards/guard_list.html", context)
+
+
+@access_required("guards.add_guard")
+def add_guard(request):
+    """
+    Add a new guard. Admin/HR only.
+
+    The form collects the sensitive fields, so a successful save is logged as
+    a sensitive CREATE entry. A refused save is logged too, with the reasons.
+    """
+    form = GuardForm(request.POST or None)
+    if request.method == "POST":
+        if form.is_valid():
+            guard = form.save()
+            log_event(
+                request,
+                AuditEntry.CREATE,
+                "Guard",
+                guard.pk,
+                sensitive=True,
+                details=f"Added {guard.summary()}. No documents on file yet.",
+            )
+            messages.success(
+                request,
+                f"{guard.full_name} was added. Readiness: {guard.readiness()}. "
+                f"The next step is to put his documents on file.",
+            )
+            return redirect("guard_profile", pk=guard.pk)
+
+        log_event(
+            request,
+            AuditEntry.CREATE,
+            "Guard",
+            "",
+            outcome=AuditEntry.DENIED,
+            sensitive=True,
+            details=f"Refused: {form.problems()}",
+        )
+    return render(request, "guards/guard_form.html", {"form": form})
 
 
 @access_required("guards.view_own_record")

@@ -1,0 +1,41 @@
+{% extends "base.html" %}
+{% block title %}{{ report_info.title }}{% endblock %}
+{% block content %}
+<h1 class="h3 mb-1">{{ report_info.title }}</h1>
+<p class="text-muted small mb-3">
+  {{ report_info.about }} Copy the details from the written request.
+  Every report you generate is recorded in the audit log with a new report number.
+</p>
+
+{% if form.non_field_errors %}
+  <div class="alert alert-danger py-2">{{ form.non_field_errors|join:" " }}</div>
+{% endif %}
+
+<form method="post" novalidate class="card card-body mb-3 compliance-form">
+  {% csrf_token %}
+  {% for field in form %}
+    <div class="mb-3">
+      {% if field.widget_type == "checkboxselectmultiple" %}
+        <fieldset>
+          <legend class="form-label fs-6 mb-1">{{ field.label }}</legend>
+          {% for option in field %}
+            <div class="form-check">
+              {{ option.tag }}
+              <label class="form-check-label" for="{{ option.id_for_label }}">{{ option.choice_label }}</label>
+            </div>
+          {% endfor %}
+        </fieldset>
+      {% else %}
+        <label class="form-label" for="{{ field.id_for_label }}">{{ field.label }}</label>
+        {{ field }}
+      {% endif %}
+      {% if field.help_text %}<div class="form-text">{{ field.help_text }}</div>{% endif %}
+      {% for error in field.errors %}<div class="text-danger small">{{ error }}</div>{% endfor %}
+    </div>
+  {% endfor %}
+  <div>
+    <button type="submit" class="btn btn-primary">Generate report</button>
+    <a class="btn btn-link" href="{% url 'audit_log' %}">Cancel</a>
+  </div>
+</form>
+{% endblock %}

@@ -1,0 +1,108 @@
+{% extends "base.html" %}
+{% block title %}Add a guard{% endblock %}
+{% block content %}
+<h1 class="h3 mb-1">Add a guard</h1>
+<p class="text-muted small">
+  A new guard starts with no documents on file, so his readiness will be
+  "Not cleared" until all six are added. He cannot be posted until then.
+</p>
+
+{% if form.non_field_errors %}
+  <div class="alert alert-danger py-2">{{ form.non_field_errors|join:" " }}</div>
+{% endif %}
+
+<form method="post" novalidate>
+  {% csrf_token %}
+
+  <div class="card mb-3">
+    <div class="card-header">Guard information</div>
+    <div class="card-body">
+      <div class="row g-3">
+        <div class="col-md-4">
+          <label class="form-label" for="{{ form.employee_no.id_for_label }}">{{ form.employee_no.label }}</label>
+          {{ form.employee_no }}
+          <div class="form-text">{{ form.employee_no.help_text }}</div>
+          {% for error in form.employee_no.errors %}<div class="text-danger small">{{ error }}</div>{% endfor %}
+        </div>
+        <div class="col-md-4">
+          <label class="form-label" for="{{ form.first_name.id_for_label }}">First name</label>
+          {{ form.first_name }}
+          {% for error in form.first_name.errors %}<div class="text-danger small">{{ error }}</div>{% endfor %}
+        </div>
+        <div class="col-md-4">
+          <label class="form-label" for="{{ form.last_name.id_for_label }}">Last name</label>
+          {{ form.last_name }}
+          {% for error in form.last_name.errors %}<div class="text-danger small">{{ error }}</div>{% endfor %}
+        </div>
+        <div class="col-md-3">
+          <label class="form-label" for="{{ form.date_hired.id_for_label }}">{{ form.date_hired.label }}</label>
+          {{ form.date_hired }}
+          {% for error in form.date_hired.errors %}<div class="text-danger small">{{ error }}</div>{% endfor %}
+        </div>
+        <div class="col-md-3">
+          <label class="form-label" for="{{ form.rank.id_for_label }}">Rank</label>
+          {{ form.rank }}
+          {% for error in form.rank.errors %}<div class="text-danger small">{{ error }}</div>{% endfor %}
+        </div>
+        <div class="col-md-3">
+          <label class="form-label" for="{{ form.position.id_for_label }}">Position</label>
+          {{ form.position }}
+          {% for error in form.position.errors %}<div class="text-danger small">{{ error }}</div>{% endfor %}
+        </div>
+        <div class="col-md-3">
+          <label class="form-label" for="{{ form.guard_type.id_for_label }}">{{ form.guard_type.label }}</label>
+          {{ form.guard_type }}
+          {% for error in form.guard_type.errors %}<div class="text-danger small">{{ error }}</div>{% endfor %}
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="card sensitive-box mb-3">
+    <div class="card-body">
+      <h2 class="h5">Sensitive details</h2>
+      <p class="small text-muted">
+        These fields are protected under RA 10173. Leave any of them blank if
+        you do not have the paperwork yet. Saving this form is recorded in the
+        audit log as a sensitive entry, and reading these fields back on the
+        profile still needs the password step-up.
+      </p>
+      <div class="row g-3">
+        <div class="col-md-4">
+          <label class="form-label" for="{{ form.birth_date.id_for_label }}">{{ form.birth_date.label }}</label>
+          {{ form.birth_date }}
+          {% for error in form.birth_date.errors %}<div class="text-danger small">{{ error }}</div>{% endfor %}
+        </div>
+        <div class="col-md-4">
+          <label class="form-label" for="{{ form.contact_number.id_for_label }}">{{ form.contact_number.label }}</label>
+          {{ form.contact_number }}
+          {% for error in form.contact_number.errors %}<div class="text-danger small">{{ error }}</div>{% endfor %}
+        </div>
+        <div class="col-md-4">
+          <label class="form-label" for="{{ form.sss_number.id_for_label }}">{{ form.sss_number.label }}</label>
+          {{ form.sss_number }}
+          {% for error in form.sss_number.errors %}<div class="text-danger small">{{ error }}</div>{% endfor %}
+        </div>
+        <div class="col-md-4">
+          <label class="form-label" for="{{ form.tin_number.id_for_label }}">{{ form.tin_number.label }}</label>
+          {{ form.tin_number }}
+          {% for error in form.tin_number.errors %}<div class="text-danger small">{{ error }}</div>{% endfor %}
+        </div>
+        <div class="col-md-4">
+          <label class="form-label" for="{{ form.philhealth_number.id_for_label }}">{{ form.philhealth_number.label }}</label>
+          {{ form.philhealth_number }}
+          {% for error in form.philhealth_number.errors %}<div class="text-danger small">{{ error }}</div>{% endfor %}
+        </div>
+        <div class="col-12">
+          <label class="form-label" for="{{ form.home_address.id_for_label }}">{{ form.home_address.label }}</label>
+          {{ form.home_address }}
+          {% for error in form.home_address.errors %}<div class="text-danger small">{{ error }}</div>{% endfor %}
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <button type="submit" class="btn btn-primary">Save guard</button>
+  <a class="btn btn-link" href="{% url 'guard_list' %}">Cancel</a>
+</form>
+{% endblock %}

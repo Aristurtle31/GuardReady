@@ -1,4 +1,4 @@
-"""Constants for attendance and evaluations."""
+"""Constants for attendance, evaluations, and compliance reports."""
 
 # A guard is late if he timed in more than this many minutes after the
 # scheduled start of his shift.
@@ -15,3 +15,30 @@ HIGHEST_SCORE = 5
 ON_TIME = "On time"
 LATE = "Late"
 ABSENT = "Absent"
+
+# ---------------------------------------------------------------------------
+# Compliance reports (Stage 5)
+# ---------------------------------------------------------------------------
+
+# PLACEHOLDERS. Ask the agency owner for the real values (CLAUDE.md open item 5).
+AGENCY_NAME = "Agency name (placeholder)"
+AGENCY_ADDRESS = "Agency address (placeholder)"
+AGENCY_LTO_NUMBER = "LTO number (placeholder)"
+
+# The report number is the ID of the REPORT audit entry, for example GR-RPT-000123.
+REPORT_NUMBER_PREFIX = "GR-RPT-"
+REPORT_NUMBER_DIGITS = 6
+
+# Printed at the end of every compliance report. Do not reword it.
+CONFIDENTIALITY_NOTE = (
+    "This report contains personal data protected under the Data Privacy Act of 2012 "
+    "(RA 10173). It is released only for the purpose stated above. Do not copy or share "
+    "it for any other purpose."
+)
+
+# Short texts printed inside report tables.
+STILL_POSTED = "Still posted"
+NONE_LISTED = "None"
+NAME_NOT_ON_FILE = "Name not on file"
+YES = "Yes"
+NO = "No"

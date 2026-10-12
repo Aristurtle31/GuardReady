@@ -1,0 +1,71 @@
+{% extends "base.html" %}
+{% block title %}{{ report.title }} {{ report.number }}{% endblock %}
+{% block content %}
+<div class="alert alert-info no-print">Press Ctrl+P (Cmd+P on Mac) to print or save as PDF.</div>
+<p class="no-print">
+  <a class="btn btn-outline-secondary btn-sm" href="{% url 'audit_log' %}">Back to the audit log</a>
+</p>
+
+{# Everything inside this article is the printed report. The tests read only this part. #}
+<article class="compliance-report" id="compliance-report">
+  <header class="report-agency">
+    <div class="agency-name">{{ report.agency_name }}</div>
+    <div>{{ report.agency_address }}</div>
+    <div>License to Operate (LTO) No.: {{ report.agency_lto_number }}</div>
+  </header>
+
+  <h1>{{ report.title }}</h1>
+
+  <table class="report-meta">
+    <tbody>
+      {% for label, value in report.header_rows %}
+        <tr><th scope="row">{{ label }}</th><td>{{ value }}</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+
+  {% for section in report.built_sections %}
+    <section class="report-section">
+      <h2>{{ forloop.counter }}. {{ section.title }}</h2>
+      {% if section.NOTE %}<p class="section-note">{{ section.NOTE }}</p>{% endif %}
+      {% if section.row_count %}
+        <table class="report-table">
+          <thead>
+            <tr>{% for column in section.columns %}<th scope="col">{{ column }}</th>{% endfor %}</tr>
+          </thead>
+          <tbody>
+            {% for row in section.rows %}
+              <tr>{% for cell in row %}<td>{{ cell }}</td>{% endfor %}</tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      {% else %}
+        <p class="report-empty">No records for this section.</p>
+      {% endif %}
+    </section>
+  {% endfor %}
+
+  {# The note and the signatures always print on the same page. #}
+  <div class="report-closing">
+    <p class="report-confidential">{{ report.confidentiality_note }}</p>
+
+    <div class="report-signatures">
+      <div>
+        <div>Prepared by:</div>
+        <div class="signature-line">{{ report.prepared_by_name }}</div>
+        <div class="signature-caption">Signature over printed name</div>
+      </div>
+      <div>
+        <div>Certified true and correct by:</div>
+        <div class="signature-line">&nbsp;</div>
+        <div class="signature-caption">Agency official, signature over printed name</div>
+      </div>
+      <div>
+        <div>Received by:</div>
+        <div class="signature-line">&nbsp;</div>
+        <div class="signature-caption">Requesting party, signature over printed name and date</div>
+      </div>
+    </div>
+  </div>
+</article>
+{% endblock %}

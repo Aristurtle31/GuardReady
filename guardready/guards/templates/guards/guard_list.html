@@ -2,7 +2,12 @@
 {% load guard_tags %}
 {% block title %}Guards{% endblock %}
 {% block content %}
-<h1 class="h3 mb-3">Guards</h1>
+<div class="d-flex flex-wrap align-items-center gap-2 mb-3">
+  <h1 class="h3 mb-0">Guards</h1>
+  {% if perms.guards.add_guard %}
+    <a class="btn btn-primary btn-sm ms-auto" href="{% url 'add_guard' %}">Add a guard</a>
+  {% endif %}
+</div>
 
 <form method="get" class="row g-2 mb-3">
   <div class="col-sm-6">
@@ -45,7 +50,7 @@
             <td>{{ guard.rank }}</td>
             <td>{% if assignment %}{{ assignment.post }}{% else %}<span class="text-muted">Not posted</span>{% endif %}</td>
             <td><span class="badge text-bg-{{ status|badge }}">{{ status }}</span></td>
-            <td>{% if earliest %}{{ earliest.doc_type }}, {{ earliest.expires|date:"M d, Y" }}{% endif %}</td>
+            <td>{% if earliest %}{{ earliest.doc_type }}, {{ earliest.expires|date:"M d, Y" }}{% else %}<span class="text-muted">No documents on file</span>{% endif %}</td>
           </tr>
         {% endwith %}
       {% empty %}
