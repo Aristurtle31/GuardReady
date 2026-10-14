@@ -7,6 +7,15 @@
   Every report you generate is recorded in the audit log with a new report number.
 </p>
 
+{% if lto_warning %}
+  <div class="alert alert-warning py-2 small">
+    <strong>LTO warning.</strong> {{ lto_warning }}
+    {% if perms.guards.manage_credentials %}
+      <a href="{% url 'agency_permits' %}">Open agency permits</a>
+    {% endif %}
+  </div>
+{% endif %}
+
 {% if form.non_field_errors %}
   <div class="alert alert-danger py-2">{{ form.non_field_errors|join:" " }}</div>
 {% endif %}

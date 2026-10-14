@@ -1,9 +1,11 @@
 """
-Tests for the guards app: Add Guard, Edit Guard, and the document forms.
+Tests for the guards app: Add Guard, Edit Guard, the document forms, and
+employment status.
 
 Run with: python manage.py test guards
 """
 
+import re
 import time
 from datetime import timedelta
 from io import StringIO
@@ -11,8 +13,9 @@ from unittest.mock import patch
 
 from django.contrib import admin
 from django.contrib.auth.models import Group, Permission, User
+from django.core.exceptions import ValidationError
 from django.core.management import call_command
-from django.test import TestCase
+from django.test import Client, SimpleTestCase, TestCase
 from django.urls import URLResolver, get_resolver, reverse
 from django.utils import timezone
 from django.utils.text import slugify
@@ -20,9 +23,33 @@ from django.utils.text import slugify
 from accounts.roles import ADMIN, GUARD, ROLE_PERMISSIONS
 from accounts.stepup import STARTED_KEY
 from audit.models import AuditEntry, RecordLockedError
+from deployment.models import Assignment, Post
 
 from . import constants as c
-from .models import Credential, CredentialVersion, Guard
+from .dates import long_date, nice_date
+from .models import (
+    PERMIT_TYPES,
+    AgencyNotice,
+    AgencyPermit,
+    AgencyPermitVersion,
+    Credential,
+    CredentialVersion,
+    EmploymentStatusChange,
+    ExpiringDocument,
+    Guard,
+    LicenseToOperate,
+    Notification,
+)
+from .services import current_guards
+from .status import (
+    STATUS_CLASSES,
+    ActiveStatus,
+    EmploymentStatus,
+    LetGoStatus,
+    OnLeaveStatus,
+    ResignedStatus,
+    SeparatedStatus,
+)
 
 PASSWORD = "testpass123"
 ADMIN_LOGIN = {"username": "admin", "password": "admin123"}
@@ -555,6 +582,389 @@ class DocumentTests(TestCase):
 
 
 # ---------------------------------------------------------------------------
+# ExpiringDocument (Part 3, step 1): the shared base under Credential
+# ---------------------------------------------------------------------------
+
+
+class ExpiringDocumentTests(SimpleTestCase):
+    """Credential extends the abstract ExpiringDocument, with no database change."""
+
+    databases = {"default"}  # makemigrations reads the migration history
+
+    def test_no_model_needs_a_new_migration(self):
+        out = StringIO()
+        try:
+            call_command("makemigrations", "--check", "--dry-run", stdout=out)
+        except SystemExit:
+            self.fail(f"Django wants a new migration:\n{out.getvalue()}")
+        self.assertIn("No changes detected", out.getvalue())
+
+    def test_credential_extends_the_abstract_base(self):
+        self.assertTrue(ExpiringDocument._meta.abstract)
+        self.assertTrue(issubclass(Credential, ExpiringDocument))
+        for name in ["number", "issued", "expires"]:
+            with self.subTest(field=name):
+                self.assertIs(Credential._meta.get_field(name).model, Credential)
+
+    def test_status_and_notice_band_at_each_edge(self):
+        sample = Credential.for_document(c.NBI_CLEARANCE)
+        today = timezone.localdate()
+        cases = [
+            (61, c.VALID, None),
+            (60, c.EXPIRING_SOON, 60),
+            (31, c.EXPIRING_SOON, 60),
+            (30, c.EXPIRING_SOON, 30),
+            (8, c.EXPIRING_SOON, 14),
+            (7, c.EXPIRING_SOON, 7),
+            (1, c.EXPIRING_SOON, 1),
+            (0, c.EXPIRED, c.EXPIRED_BAND),
+            (-3, c.EXPIRED, c.EXPIRED_BAND),
+        ]
+        for days, status, band in cases:
+            with self.subTest(days=days):
+                sample.expires = today + timedelta(days=days)
+                self.assertEqual(sample.days_left(), days)
+                self.assertEqual(sample.status(), status)
+                self.assertEqual(sample.notice_band(), band)
+
+    def test_the_shared_date_checks(self):
+        today = timezone.localdate()
+        with self.assertRaises(ValidationError):
+            Credential.check_values(" ", today, today + timedelta(days=1))
+        with self.assertRaises(ValidationError):
+            Credential.check_values("A-1", today + timedelta(days=1), today + timedelta(days=9))
+        with self.assertRaises(ValidationError):
+            Credential.check_values("A-1", today, today)
+        Credential.check_values("A-1", today, today + timedelta(days=1))  # no error
+
+    def test_only_a_typed_credential_knows_its_validity(self):
+        with self.assertRaises(NotImplementedError):
+            Credential(kind=c.LICENSE).validity_months()
+        lesp = Credential.for_document(c.LESP_LICENSE)
+        self.assertEqual(lesp.validity_months(), c.LICENSE_VALIDITY_MONTHS)
+
+
+# ---------------------------------------------------------------------------
+# Agency permits (Part 3, step 2): the agency's own License to Operate
+# ---------------------------------------------------------------------------
+
+
+def make_lto(days_left, number="LTO-TEST-0001"):
+    """Put an LTO on file that expires in days_left days. It was issued 400 days ago."""
+    today = timezone.localdate()
+    issued = today - timedelta(days=400)
+    expires = today + timedelta(days=days_left)
+    return AgencyPermit.add(c.LTO, number, issued, expires, issuer="PNP SOSIA")
+
+
+def permit_data(number="LTO-2026-0100", issued_days_ago=10, valid_days=1800, **changes):
+    """The Agency permit form, filled in."""
+    today = timezone.localdate()
+    data = {
+        "number": number,
+        "issuer": "PNP SOSIA",
+        "issued": (today - timedelta(days=issued_days_ago)).isoformat(),
+        "expires": (today + timedelta(days=valid_days)).isoformat(),
+    }
+    data.update(changes)
+    return data
+
+
+def input_tag(response, name):
+    """The HTML <input> tag of one form field, to check what it is filled with."""
+    return re.search(rf'<input[^>]*name="{name}"[^>]*>', response.content.decode()).group(0)
+
+
+class AgencyPermitModelTests(TestCase):
+    """The permit classes, renew(), and notices in the right bands."""
+
+    @classmethod
+    def setUpTestData(cls):
+        cls.hr = User.objects.create(username="hr")
+
+    def test_the_factory_picks_the_proxy_class(self):
+        self.assertEqual(PERMIT_TYPES, {c.LTO: LicenseToOperate})
+        self.assertTrue(issubclass(AgencyPermit, ExpiringDocument))
+        lto = AgencyPermit.for_kind(c.LTO)
+        self.assertIsInstance(lto, LicenseToOperate)
+        self.assertEqual(lto.validity_months(), 60)  # the placeholder in the approved plan
+        self.assertEqual(lto.name(), "License to Operate (LTO)")
+        with self.assertRaises(NotImplementedError):
+            AgencyPermit(kind=c.LTO).validity_months()
+        self.assertIsInstance(make_lto(100), LicenseToOperate)
+        self.assertIsInstance(AgencyPermit.on_file(c.LTO), LicenseToOperate)
+
+    def test_only_one_permit_of_each_kind(self):
+        make_lto(100)
+        with self.assertRaises(ValidationError):
+            make_lto(200, number="LTO-TEST-0002")
+        self.assertEqual(AgencyPermit.objects.count(), 1)
+
+    def test_renewing_writes_a_version_first(self):
+        permit = make_lto(5)
+        old = (permit.number, permit.issued, permit.expires)
+        today = timezone.localdate()
+        permit.renew(" LTO-TEST-0002 ", today, today + timedelta(days=1800), self.hr)
+
+        version = permit.versions.get()
+        self.assertEqual((version.old_number, version.old_issued, version.old_expires), old)
+        self.assertEqual(version.changed_by, self.hr)
+        permit.refresh_from_db()
+        self.assertEqual(permit.number, "LTO-TEST-0002")
+
+    def test_nothing_changes_if_the_version_cannot_be_saved(self):
+        permit = make_lto(5)
+        today = timezone.localdate()
+        failing = patch.object(
+            AgencyPermitVersion.objects, "create", side_effect=RecordLockedError("test")
+        )
+        with failing, self.assertRaises(RecordLockedError):
+            permit.renew("LTO-TEST-0002", today, today + timedelta(days=1800), self.hr)
+        permit.refresh_from_db()
+        self.assertEqual(permit.number, "LTO-TEST-0001")
+
+    def test_wrong_dates_are_refused_before_anything_is_saved(self):
+        permit = make_lto(5)
+        today = timezone.localdate()
+        with self.assertRaises(ValidationError):
+            permit.renew("LTO-2", today + timedelta(days=1), today + timedelta(days=9), self.hr)
+        self.assertFalse(permit.versions.exists())
+
+    def test_permit_notices_are_created_in_the_right_bands(self):
+        permit = make_lto(100)
+        today = timezone.localdate()
+        cases = [
+            (61, None), (60, 60), (45, 60), (30, 30), (14, 14), (8, 14),
+            (7, 7), (5, 7), (1, 1), (0, c.EXPIRED_BAND), (-2, c.EXPIRED_BAND),
+        ]
+        for days, band in cases:
+            with self.subTest(days=days):
+                permit.expires = today + timedelta(days=days)
+                permit.save()  # test setup only. HR changes dates through renew().
+                notice = permit.make_notice()
+                self.assertEqual(notice.band if notice else None, band)
+                if notice:
+                    self.assertEqual(notice.expiry_date, permit.expires)
+                self.assertIsNone(permit.make_notice())  # a band is never sent twice
+        self.assertEqual(AgencyNotice.objects.count(), len([b for _, b in cases if b is not None]))
+
+    def test_a_renewal_with_a_new_expiry_starts_the_bands_again(self):
+        permit = make_lto(5)
+        first = permit.make_notice()
+        self.assertEqual(first.band, 7)
+        self.assertEqual(
+            first.message(),
+            f"Agency: License to Operate (LTO) expires in 5 days ({nice_date(permit.expires)}).",
+        )
+        today = timezone.localdate()
+        permit.renew(permit.number, today - timedelta(days=30), today + timedelta(days=3), self.hr)
+        second = permit.make_notice()
+        self.assertEqual((second.band, second.expiry_date), (7, permit.expires))
+        self.assertEqual(permit.notices.count(), 2)
+
+    def test_a_guard_document_uses_the_same_notice_steps(self):
+        today = timezone.localdate()
+        guard = Guard.objects.create(
+            employee_no="GR-0099",
+            first_name="Test",
+            last_name="Guard",
+            guard_type=c.GUARD_TYPES[0],
+            date_hired=today,
+        )
+        credential = guard.add_credential(
+            c.NBI_CLEARANCE, "NBI-1", today - timedelta(days=360), today + timedelta(days=5)
+        )
+        notice = credential.make_notice()
+        self.assertIsInstance(notice, Notification)
+        self.assertEqual(notice.guard, guard)
+        self.assertEqual(
+            notice.message(),
+            f"Test Guard: NBI Clearance expires in 5 days ({nice_date(credential.expires)}).",
+        )
+        self.assertIsNone(credential.make_notice())
+
+    def test_a_notice_only_moves_forward(self):
+        notice = make_lto(0).make_notice()
+        when = nice_date(notice.expiry_date)
+        expected = f"Agency: License to Operate (LTO) has expired ({when})."
+        self.assertEqual(notice.message(), expected)
+        notice.mark_seen()
+        notice.resolve()
+        with self.assertRaises(ValidationError):
+            notice.mark_seen()
+
+    def test_permits_versions_and_notices_are_never_deleted(self):
+        permit = make_lto(5)
+        notice = permit.make_notice()
+        today = timezone.localdate()
+        permit.renew("LTO-TEST-0002", today, today + timedelta(days=1800), self.hr)
+        version = permit.versions.get()
+        for record in (permit, version, notice):
+            with self.subTest(record=type(record).__name__):
+                with self.assertRaises(RecordLockedError):
+                    record.delete()
+        with self.assertRaises(RecordLockedError):
+            version.save()
+        with self.assertRaises(RecordLockedError):
+            AgencyPermitVersion.objects.all().delete()
+
+    def test_the_line_for_the_dashboard(self):
+        missing = AgencyPermit.overview(c.LTO)
+        self.assertEqual(
+            (missing["status"], missing["text"], missing["color"]),
+            (c.NOT_ON_FILE, "not on file", "danger"),
+        )
+        permit = make_lto(400)
+        today = timezone.localdate()
+        cases = [
+            (400, c.VALID, "valid until", "success"),
+            (5, c.EXPIRING_SOON, "expires in 5 days, on", "warning"),
+            (1, c.EXPIRING_SOON, "expires in 1 day, on", "warning"),
+            (-1, c.EXPIRED, "expired on", "danger"),
+        ]
+        for days, status, text, color in cases:
+            with self.subTest(days=days):
+                permit.expires = today + timedelta(days=days)
+                permit.save()  # test setup only
+                line = AgencyPermit.overview(c.LTO)
+                self.assertEqual((line["status"], line["color"]), (status, color))
+                self.assertEqual(line["text"], f"{text} {long_date(permit.expires)}")
+
+
+class AgencyPermitPageTests(TestCase):
+    """The Agency permits page: a list, Add, and Renew or correct. Admin/HR only."""
+
+    @classmethod
+    def setUpTestData(cls):
+        cls.hr = build_user("hr", ADMIN)
+        build_user("guard1", GUARD)
+
+    def setUp(self):
+        self.client.login(username="hr", password=PASSWORD)
+
+    def test_the_list_offers_add_when_no_lto_is_on_file(self):
+        response = self.client.get(reverse("agency_permits"))
+        self.assertContains(response, "Not on file")
+        self.assertContains(response, reverse("add_permit", args=["lto"]))
+        opened = AuditEntry.objects.first()
+        self.assertEqual((opened.action, opened.target_type), (AuditEntry.VIEW, "AgencyPermit"))
+
+    def test_adding_the_lto_is_saved_and_logged(self):
+        response = self.client.post(reverse("add_permit", args=["lto"]), permit_data())
+        self.assertRedirects(response, reverse("agency_permits"))
+        lto = AgencyPermit.on_file(c.LTO)
+        self.assertEqual((lto.number, lto.issuer), ("LTO-2026-0100", "PNP SOSIA"))
+        entry = AuditEntry.objects.get(action=AuditEntry.CREATE, target_type="AgencyPermit")
+        self.assertEqual(entry.target_id, str(lto.pk))
+        self.assertIn("LTO-2026-0100", entry.details)
+        self.assertContains(self.client.get(reverse("agency_permits")), "LTO-2026-0100")
+
+    def test_the_expiry_date_is_never_filled_in(self):
+        add = self.client.get(reverse("add_permit", args=["lto"]))
+        self.assertNotIn("value=", input_tag(add, "expires"))
+        lto = make_lto(5)
+        renew = self.client.get(reverse("renew_permit", args=["lto"]))
+        self.assertNotIn("value=", input_tag(renew, "expires"))
+        self.assertIn(f'value="{lto.number}"', input_tag(renew, "number"))
+        self.assertIn(f'value="{lto.issued.isoformat()}"', input_tag(renew, "issued"))
+
+    def test_the_same_date_checks_as_guard_documents(self):
+        cases = {
+            "future issue date": permit_data(issued_days_ago=-1),
+            "expiry before the issue date": permit_data(valid_days=-20),
+            "blank number": permit_data(number=" "),
+        }
+        for name, data in cases.items():
+            with self.subTest(name):
+                response = self.client.post(reverse("add_permit", args=["lto"]), data)
+                self.assertEqual(response.status_code, 200)
+                self.assertIsNone(AgencyPermit.on_file(c.LTO))
+        refused = AuditEntry.objects.filter(
+            action=AuditEntry.CREATE, outcome=AuditEntry.DENIED, target_type="AgencyPermit"
+        )
+        self.assertEqual(refused.count(), len(cases))
+
+    def test_renewing_through_the_page_writes_a_version_and_logs_the_change(self):
+        lto = make_lto(5)
+        today = timezone.localdate()
+        data = {
+            "number": "LTO-2026-0200",
+            "issued": today.isoformat(),
+            "expires": (today + timedelta(days=1825)).isoformat(),
+        }
+        response = self.client.post(reverse("renew_permit", args=["lto"]), data)
+        self.assertRedirects(response, reverse("agency_permits"))
+        version = lto.versions.get()
+        self.assertEqual(version.old_number, "LTO-TEST-0001")
+        entry = AuditEntry.objects.get(action=AuditEntry.UPDATE, target_type="AgencyPermit")
+        self.assertIn('from "LTO-TEST-0001" to "LTO-2026-0200"', entry.details)
+        history = self.client.get(reverse("agency_permits"))
+        self.assertContains(history, "LTO-TEST-0001")  # the old number, in the change history
+
+    def test_nothing_changed_is_refused_and_logged(self):
+        lto = make_lto(5)
+        same = {
+            "number": lto.number,
+            "issued": lto.issued.isoformat(),
+            "expires": lto.expires.isoformat(),
+        }
+        response = self.client.post(reverse("renew_permit", args=["lto"]), same)
+        self.assertContains(response, "Nothing was changed")
+        self.assertFalse(lto.versions.exists())
+        entry = AuditEntry.objects.get(action=AuditEntry.UPDATE, target_type="AgencyPermit")
+        self.assertEqual(entry.outcome, AuditEntry.DENIED)
+
+    def test_add_and_renew_send_you_to_the_right_page(self):
+        response = self.client.get(reverse("renew_permit", args=["lto"]))
+        self.assertRedirects(response, reverse("add_permit", args=["lto"]))
+        make_lto(5)
+        response = self.client.get(reverse("add_permit", args=["lto"]))
+        self.assertRedirects(response, reverse("renew_permit", args=["lto"]))
+
+    def test_an_unknown_permit_is_not_found(self):
+        for name in ["add_permit", "renew_permit"]:
+            with self.subTest(name):
+                self.assertEqual(self.client.get(reverse(name, args=["xyz"])).status_code, 404)
+
+    def test_the_dashboard_shows_the_lto_line(self):
+        response = self.client.get(reverse("dashboard"))
+        self.assertContains(response, "License to Operate (LTO)</strong>: not on file.")
+        lto = make_lto(400)
+        response = self.client.get(reverse("dashboard"))
+        self.assertContains(response, f"No. {lto.number}: valid until {long_date(lto.expires)}.")
+        self.assertContains(response, 'class="alert alert-success')
+
+    def test_guard1_is_refused_on_every_permit_page(self):
+        make_lto(5)
+        self.client.logout()
+        self.client.login(username="guard1", password=PASSWORD)
+        urls = [
+            reverse("agency_permits"),
+            reverse("add_permit", args=["lto"]),
+            reverse("renew_permit", args=["lto"]),
+        ]
+        for url in urls:
+            for method in (self.client.get, self.client.post):
+                with self.subTest(url=url, method=method.__name__):
+                    response = method(url, permit_data(number="CHANGED-1"))
+                    self.assertEqual(response.status_code, 403)
+                    entry = AuditEntry.objects.first()
+                    self.assertEqual((entry.action, entry.username), (AuditEntry.DENY, "guard1"))
+        self.assertEqual(AgencyPermit.on_file(c.LTO).number, "LTO-TEST-0001")
+        self.assertFalse(AgencyPermitVersion.objects.exists())
+
+    def test_only_admin_sees_the_menu_link(self):
+        menu_link = f'<a class="nav-link" href="{reverse("agency_permits")}">Agency permits</a>'
+        self.assertContains(self.client.get(reverse("dashboard")), menu_link, html=True)
+        self.client.logout()
+        self.client.login(username="guard1", password=PASSWORD)
+        # The refused page still has the guard's own menu, without this link.
+        refused = self.client.get(reverse("agency_permits"))
+        self.assertContains(refused, "Log out", status_code=403)
+        self.assertNotContains(refused, "Agency permits", status_code=403)
+
+
+# ---------------------------------------------------------------------------
 # The Guard role, and no delete anywhere
 # ---------------------------------------------------------------------------
 
@@ -579,6 +989,7 @@ class GuardRoleTests(TestCase):
             reverse("edit_guard_sensitive", args=[self.own.pk]),
             reverse("add_document", args=[self.own.pk, slugify(c.POLICE_CLEARANCE)]),
             reverse("renew_document", args=[self.own.pk, slugify(c.NBI_CLEARANCE)]),
+            reverse("change_status", args=[self.own.pk]),
         ]
 
     def test_guard1_is_refused_on_every_new_page(self):
@@ -666,3 +1077,260 @@ class NoDeleteTests(TestCase):
                 self.client.delete(url)
         self.assertEqual(Guard.objects.count(), guards)
         self.assertEqual(Credential.objects.count(), credentials)
+
+
+# ---------------------------------------------------------------------------
+# Employment status
+# ---------------------------------------------------------------------------
+
+
+class StatusClassTests(SimpleTestCase):
+    """Each status class gives the answers in the approved table."""
+
+    # can be assigned, gets notices, counts as current, allows login, can change to
+    TABLE = {
+        c.ACTIVE: (True, True, True, True, [c.ON_LEAVE, c.RESIGNED, c.LET_GO]),
+        c.ON_LEAVE: (False, True, True, True, [c.ACTIVE, c.RESIGNED, c.LET_GO]),
+        c.RESIGNED: (False, False, False, False, [c.ACTIVE]),
+        c.LET_GO: (False, False, False, False, [c.ACTIVE]),
+    }
+    REASONS = {
+        c.ACTIVE: c.ACTIVE_REASONS,
+        c.ON_LEAVE: c.ON_LEAVE_REASONS,
+        c.RESIGNED: c.RESIGNED_REASONS,
+        c.LET_GO: c.LET_GO_REASONS,
+    }
+
+    def test_each_status_answers_like_the_table(self):
+        for name, expected in self.TABLE.items():
+            with self.subTest(status=name):
+                status = STATUS_CLASSES[name]()
+                answers = (
+                    status.can_be_assigned(),
+                    status.gets_notices(),
+                    status.counts_as_current(),
+                    status.allows_login(),
+                    status.next_statuses(),
+                )
+                self.assertEqual(answers, expected)
+
+    def test_each_status_gives_only_its_own_reasons(self):
+        for name, reasons in self.REASONS.items():
+            with self.subTest(status=name):
+                self.assertEqual(STATUS_CLASSES[name]().reasons(), reasons)
+
+    def test_the_refusal_reasons(self):
+        self.assertEqual(ActiveStatus().refusal_reason(), "")
+        self.assertEqual(OnLeaveStatus().refusal_reason(), "On leave")
+        self.assertEqual(ResignedStatus().refusal_reason(), "No longer employed")
+        self.assertEqual(LetGoStatus().refusal_reason(), "No longer employed")
+
+    def test_resigned_and_let_go_extend_the_separated_rules(self):
+        for status_class in (ResignedStatus, LetGoStatus):
+            with self.subTest(status=status_class.NAME):
+                self.assertTrue(issubclass(status_class, SeparatedStatus))
+                self.assertTrue(issubclass(status_class, EmploymentStatus))
+
+    def test_the_base_classes_cannot_be_used_on_their_own(self):
+        for abstract_class in (EmploymentStatus, SeparatedStatus):
+            with self.subTest(base=abstract_class.__name__):
+                with self.assertRaises(TypeError):
+                    abstract_class()
+
+
+class EmploymentStatusTests(TestCase):
+    """Changing a status: the page, the date rules, the posting, the login, and the log."""
+
+    @classmethod
+    def setUpTestData(cls):
+        seed()
+
+    def setUp(self):
+        self.today = timezone.localdate()
+        self.client.login(**ADMIN_LOGIN)
+
+    def guard(self, employee_no):
+        return Guard.objects.get(employee_no=employee_no)
+
+    def change(self, guard, status, reason, days_ago=0, client=None):
+        """Post the change status form, like the admin does."""
+        effective_date = self.today - timedelta(days=days_ago)
+        return (client or self.client).post(
+            reverse("change_status", args=[guard.pk]),
+            {"change": f"{status}|{reason}", "effective_date": effective_date.isoformat()},
+        )
+
+    def guard_client(self):
+        """A second browser, logged in as guard1."""
+        client = Client()
+        self.assertTrue(client.login(**GUARD_LOGIN))
+        return client
+
+    def test_a_guard_with_no_records_is_active(self):
+        mario = self.guard("GR-0002")
+        self.assertFalse(mario.status_changes.exists())
+        self.assertIsInstance(mario.employment_status(), ActiveStatus)
+        self.assertIsNone(mario.employment_status().effective_date)
+
+    def test_the_list_offers_only_the_allowed_next_statuses(self):
+        mario = self.guard("GR-0002")
+        response = self.client.get(reverse("change_status", args=[mario.pk]))
+        for status in [c.ON_LEAVE, c.RESIGNED, c.LET_GO]:
+            self.assertContains(response, f'<optgroup label="{status}">')
+        self.assertNotContains(response, f'<optgroup label="{c.ACTIVE}">')
+        # A value that is not in the list is refused, and nothing is saved.
+        response = self.change(mario, c.ACTIVE, "Hired")
+        self.assertContains(response, "Select a valid choice")
+        self.assertFalse(mario.status_changes.exists())
+
+    def test_resigning_closes_the_open_posting_on_the_effective_date(self):
+        mario = self.guard("GR-0002")
+        posting = mario.current_assignment()
+        self.assertIsNotNone(posting)
+        response = self.change(mario, c.RESIGNED, "Resigned", days_ago=3)
+        self.assertRedirects(response, reverse("guard_profile", args=[mario.pk]))
+
+        effective_date = self.today - timedelta(days=3)
+        posting.refresh_from_db()
+        self.assertEqual(posting.end_date, effective_date)
+        self.assertIsInstance(mario.employment_status(), ResignedStatus)
+
+        entry = AuditEntry.objects.get(action=AuditEntry.UPDATE, target_id=str(mario.pk))
+        for text in ['from "Active" to "Resigned"', f"effective {long_date(effective_date)}",
+                     'reason "Resigned"', "open posting at"]:
+            with self.subTest(text=text):
+                self.assertIn(text, entry.details)
+
+    def test_a_date_before_his_posting_started_is_refused(self):
+        elmer = self.guard("GR-0005")  # posted 21 days ago
+        response = self.change(elmer, c.ON_LEAVE, "Approved leave", days_ago=30)
+        self.assertContains(response, "before his current posting started")
+        self.assertIsNotNone(elmer.current_assignment())
+        self.assertFalse(elmer.status_changes.exists())
+
+    def test_a_future_date_or_a_date_before_date_hired_is_refused(self):
+        # Arnel has no open posting, so only the date rules can refuse him.
+        arnel = self.guard("GR-0008")
+        self.assertIsNone(arnel.current_assignment())
+        before_hired = (self.today - arnel.date_hired).days + 1
+        cases = [
+            (-1, "The effective date cannot be in the future."),
+            (before_hired, "The effective date cannot be before he was hired"),
+        ]
+        for days_ago, message in cases:
+            with self.subTest(message=message):
+                response = self.change(arnel, c.RESIGNED, "Resigned", days_ago=days_ago)
+                self.assertContains(response, message)
+        self.assertIsInstance(arnel.employment_status(), ActiveStatus)
+        refused = AuditEntry.objects.filter(action=AuditEntry.UPDATE, outcome=AuditEntry.DENIED)
+        self.assertEqual(refused.count(), 2)
+
+    def test_a_date_before_his_last_change_is_refused(self):
+        joel = self.guard("GR-0003")
+        self.change(joel, c.ON_LEAVE, "Approved leave", days_ago=2)
+        response = self.change(joel, c.ACTIVE, "Back from leave", days_ago=5)
+        self.assertContains(response, "before his last status change")
+        self.assertIsInstance(joel.employment_status(), OnLeaveStatus)
+
+    def test_the_latest_change_decides_his_status(self):
+        joel = self.guard("GR-0003")  # posted 30 days ago
+        self.change(joel, c.ON_LEAVE, "Approved leave", days_ago=10)
+        self.change(joel, c.ACTIVE, "Back from leave", days_ago=3)
+        self.assertIsInstance(joel.employment_status(), ActiveStatus)
+        self.assertEqual([change.status for change in joel.status_history()], [c.ACTIVE, c.ON_LEAVE])
+
+    def test_on_leave_and_resigned_guards_cannot_be_assigned(self):
+        """
+        Assignment.start() refuses them with the reason. Logging the refusal
+        is the job of assign_guard(), which comes in Stage 3.
+        """
+        admin_user = User.objects.get(username="admin")
+        post = Post.objects.get(name="Basement Parking")  # 0 of 1 filled
+        cases = [
+            ("GR-0003", c.ON_LEAVE, "Approved leave", c.ON_LEAVE_REFUSAL),
+            ("GR-0002", c.RESIGNED, "Resigned", c.SEPARATED_REFUSAL),
+        ]
+        for employee_no, status, reason, refusal in cases:
+            with self.subTest(status=status):
+                guard = self.guard(employee_no)
+                self.change(guard, status, reason)
+                with self.assertRaisesMessage(ValidationError, refusal):
+                    Assignment.start(guard, post, admin_user)
+        self.assertFalse(post.active_assignments().exists())
+
+    def test_a_resigned_guards_login_stops_and_rehiring_restores_it(self):
+        juan = self.guard("GR-0001")  # guard1
+        logged_in = self.guard_client()
+
+        self.change(juan, c.RESIGNED, "Resigned")
+        # His next click finds him logged out, and he cannot log in again.
+        response = logged_in.get(reverse("my_record"))
+        self.assertEqual(response.status_code, 302)
+        self.assertIn(reverse("login"), response.url)
+        self.assertFalse(Client().login(**GUARD_LOGIN))
+        entry = AuditEntry.objects.filter(action=AuditEntry.UPDATE).first()
+        self.assertIn("Login turned off for user guard1", entry.details)
+
+        self.change(juan, c.ACTIVE, "Rehired")
+        self.assertIsInstance(juan.employment_status(), ActiveStatus)
+        self.assertTrue(Client().login(**GUARD_LOGIN))
+        entry = AuditEntry.objects.filter(action=AuditEntry.UPDATE).first()
+        self.assertIn("Login turned back on for user guard1", entry.details)
+
+    def test_guards_who_left_are_not_counted_and_get_no_notices(self):
+        """check_expiry() comes in Stage 2. It will ask gets_notices(), checked here."""
+        noel = self.guard("GR-0009")  # resigned in the seed
+        self.assertFalse(noel.employment_status().gets_notices())
+        self.assertNotIn(noel, current_guards())
+
+        dashboard = self.client.get(reverse("dashboard"))
+        self.assertEqual(dashboard.context["total"], 8)
+        self.assertEqual(dashboard.context["left"], 1)
+        self.assertEqual(sum(card["count"] for card in dashboard.context["cards"]), 8)
+
+        self.assertNotContains(self.client.get(reverse("guard_list")), noel.full_name)
+        left = self.client.get(reverse("guard_list"), {"show": c.SHOW_LEFT})
+        self.assertContains(left, noel.full_name)
+        self.assertNotContains(left, "Juan Dela Cruz")
+
+    def test_on_leave_guards_still_count_and_are_labelled(self):
+        joel = self.guard("GR-0003")
+        self.change(joel, c.ON_LEAVE, "Approved leave")
+        dashboard = self.client.get(reverse("dashboard"))
+        self.assertEqual(dashboard.context["total"], 8)
+        self.assertEqual(dashboard.context["on_leave"], 1)
+        listed = self.client.get(reverse("guard_list"))
+        self.assertContains(listed, joel.full_name)
+        self.assertContains(listed, ">On leave</span>")
+
+    def test_the_profile_shows_status_and_history_and_a_guard_sees_his_own(self):
+        noel = self.guard("GR-0009")
+        response = self.client.get(reverse("guard_profile", args=[noel.pk]))
+        self.assertContains(response, "Employment status history")
+        self.assertContains(response, "Cannot be posted: No longer employed.")
+
+        juan = self.guard("GR-0001")
+        own = self.guard_client().get(reverse("guard_profile", args=[juan.pk]))
+        self.assertContains(own, "Employment status")
+        self.assertContains(own, "since he was hired")
+        self.assertNotContains(own, reverse("change_status", args=[juan.pk]))
+
+    def test_guard1_is_refused_on_the_change_status_page(self):
+        juan = self.guard("GR-0001")
+        client = self.guard_client()
+        url = reverse("change_status", args=[juan.pk])
+        for method in (client.get, client.post):
+            with self.subTest(method=method.__name__):
+                response = method(url, {"change": "Resigned|Resigned",
+                                        "effective_date": self.today.isoformat()})
+                self.assertEqual(response.status_code, 403)
+                entry = AuditEntry.objects.first()
+                self.assertEqual((entry.action, entry.username), (AuditEntry.DENY, "guard1"))
+        self.assertFalse(juan.status_changes.exists())
+
+    def test_the_status_history_is_append_only(self):
+        change = EmploymentStatusChange.objects.get(guard__employee_no="GR-0009")
+        with self.assertRaises(RecordLockedError):
+            change.save()
+        with self.assertRaises(RecordLockedError):
+            change.delete()

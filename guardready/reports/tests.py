@@ -7,6 +7,7 @@ Run with: python manage.py test reports
 from datetime import timedelta
 from io import StringIO
 
+from django.contrib.auth.models import User
 from django.core.management import call_command
 from django.db.models import Q
 from django.test import TestCase
@@ -15,8 +16,10 @@ from django.utils import timezone
 
 from audit.models import AuditEntry
 from deployment.models import Assignment, ClientSite
+from guards.constants import EXPIRING_SOON, LTO
 from guards.dates import long_date, nice_date
-from guards.models import Credential, CredentialVersion, Guard
+from guards.models import AgencyPermit, Credential, CredentialVersion, Guard
+from reports import constants
 from reports.models import Evaluation
 
 from .compliance import (
@@ -268,3 +271,71 @@ class SectionListTests(ComplianceTestCase):
         response = self.client.get(reverse("audit_log"))
         self.assertContains(response, "Print Government Report")
         self.assertContains(response, "Print Client Report")
+
+
+class EmploymentStatusReportTests(ComplianceTestCase):
+    """Rosters list only guards employed on the print date. History still shows guards who left."""
+
+    def test_sosia_rosters_skip_guards_who_left_but_history_keeps_them(self):
+        noel = Guard.objects.get(employee_no="GR-0009")  # resigned in the seed
+        for section in ["roster", "documents", "blocked"]:
+            with self.subTest(section=section):
+                body = report_body(self.print_report(SosiaReport, sections=[section]))
+                self.assertNotIn(noel.full_name, body)
+        history = report_body(self.print_report(SosiaReport, sections=["deployments"]))
+        self.assertIn(noel.full_name, history)
+
+    def test_client_guard_list_skips_guards_who_left_but_the_record_keeps_them(self):
+        noel = Guard.objects.get(employee_no="GR-0009")  # was posted at Bayview Mall
+        guards = report_body(self.print_report(ClientReport, sections=["site_guards"]))
+        self.assertNotIn(noel.full_name, guards)
+        record = report_body(self.print_report(ClientReport, sections=["site_deployments"]))
+        self.assertIn(noel.full_name, record)
+
+
+class LtoHeaderTests(ComplianceTestCase):
+    """The header prints the License to Operate on file, or "LTO not on file" with a warning."""
+
+    HEADER = "License to Operate (LTO) No.: "
+
+    def form_page(self, report_class=SosiaReport):
+        return self.client.get(reverse("compliance_request", args=[report_class.KIND]))
+
+    def test_the_header_prints_the_lto_on_file(self):
+        # The seed's LTO expires in 5 days, so it is still valid.
+        lto = AgencyPermit.on_file(LTO)
+        self.assertEqual(lto.status(), EXPIRING_SOON)
+        self.assertEqual((lto.days_left(), lto.notice_band()), (5, 7))
+        self.assertNotContains(self.form_page(), "LTO warning")
+        for report_class in [SosiaReport, ClientReport]:
+            with self.subTest(report=report_class.KIND):
+                body = report_body(self.print_report(report_class))
+                self.assertIn(self.HEADER + lto.number, body)
+
+    def test_an_expired_lto_prints_lto_not_on_file_with_a_warning(self):
+        lto = AgencyPermit.on_file(LTO)
+        yesterday = self.today - timedelta(days=1)
+        admin = User.objects.get(username="admin")
+        lto.renew(lto.number, self.today - timedelta(days=800), yesterday, admin)
+
+        form = self.form_page()
+        self.assertContains(form, "LTO warning")
+        self.assertContains(form, f"expired on {long_date(yesterday)}")
+        body = report_body(self.print_report(SosiaReport))
+        self.assertIn(self.HEADER + constants.LTO_NOT_ON_FILE, body)
+        self.assertNotIn(lto.number, body)
+
+    def test_no_lto_on_file_prints_lto_not_on_file_with_a_warning(self):
+        # Test setup only. The app has no way to delete a permit.
+        AgencyPermit.objects.filter(kind=LTO).delete()
+        form = self.form_page(ClientReport)
+        self.assertContains(form, "LTO warning")
+        self.assertContains(form, "not on file. The report header will print")
+        body = report_body(self.print_report(ClientReport))
+        self.assertIn(self.HEADER + constants.LTO_NOT_ON_FILE, body)
+
+    def test_the_placeholder_number_is_gone(self):
+        self.assertFalse(hasattr(constants, "AGENCY_LTO_NUMBER"))
+        body = report_body(self.print_report(NpcReport))
+        self.assertNotIn("LTO number (placeholder)", body)
+        self.assertIn(self.HEADER + AgencyPermit.on_file(LTO).number, body)

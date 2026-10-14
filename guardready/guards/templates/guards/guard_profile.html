@@ -5,8 +5,14 @@
 <div class="d-flex flex-wrap align-items-center gap-2 mb-3">
   <h1 class="h3 mb-0">{{ guard.full_name }}</h1>
   <span class="badge text-bg-{{ readiness|badge }} fs-6">{{ readiness }}</span>
+  {% if employment.list_label %}
+    <span class="badge text-bg-{{ employment.name|badge }} fs-6">{{ employment.list_label }}</span>
+  {% endif %}
   {% if perms.guards.change_guard %}
-    <a class="btn btn-outline-primary btn-sm ms-auto" href="{% url 'edit_guard' guard.pk %}">Edit guard</a>
+    <div class="ms-auto d-flex gap-2">
+      <a class="btn btn-outline-primary btn-sm" href="{% url 'edit_guard' guard.pk %}">Edit guard</a>
+      <a class="btn btn-outline-primary btn-sm" href="{% url 'change_status' guard.pk %}">Change status</a>
+    </div>
   {% endif %}
 </div>
 
@@ -20,6 +26,13 @@
         <tr><th>Rank</th><td>{{ guard.rank }}</td></tr>
         <tr><th>Position</th><td>{{ guard.position }}</td></tr>
         <tr><th>Date hired</th><td>{{ guard.date_hired|date:"M d, Y" }}</td></tr>
+        <tr>
+          <th>Employment status</th>
+          <td>
+            <span class="badge text-bg-{{ employment.name|badge }}">{{ employment.name }}</span>
+            {% if employment.effective_date %}since {{ employment.effective_date|date:"F j, Y" }}{% else %}since he was hired{% endif %}
+          </td>
+        </tr>
         <tr><th>Contact number</th><td class="masked">{{ guard.masked_contact }}</td></tr>
         <tr><th>Current post</th><td>{% if assignment %}{{ assignment.post }} since {{ assignment.start_date|date:"M d, Y" }}{% else %}Not posted{% endif %}</td></tr>
       </table>
@@ -34,17 +47,46 @@
           Earliest expiry:
           {% if earliest %}{{ earliest.doc_type }}, {{ earliest.expires|date:"M d, Y" }}{% else %}None on file{% endif %}
         </p>
+        {% if employment.refusal_reason %}
+          <p class="mb-1 text-danger fw-semibold">Cannot be posted: {{ employment.refusal_reason }}.</p>
+        {% endif %}
         {% if block_reasons %}
           <p class="mb-1 text-danger fw-semibold">Cannot be posted because:</p>
           <ul class="mb-0">
             {% for reason in block_reasons %}<li>{{ reason }}</li>{% endfor %}
           </ul>
-        {% else %}
+        {% elif not employment.refusal_reason %}
           <p class="mb-0 text-success">Can be posted.</p>
         {% endif %}
       </div>
     </div>
   </div>
+</div>
+
+<div class="card mb-3">
+  <div class="card-header">Employment status history</div>
+  {% if status_history %}
+    <div class="table-responsive">
+      <table class="table table-sm mb-0">
+        <thead>
+          <tr><th>Effective date</th><th>Status</th><th>Reason</th><th>Recorded by</th><th>Recorded on</th></tr>
+        </thead>
+        <tbody>
+          {% for change in status_history %}
+            <tr>
+              <td class="text-nowrap">{{ change.effective_date|date:"F j, Y" }}</td>
+              <td><span class="badge text-bg-{{ change.status|badge }}">{{ change.status }}</span></td>
+              <td>{{ change.reason }}</td>
+              <td>{{ change.recorded_by.get_full_name|default:change.recorded_by.username }}</td>
+              <td class="text-nowrap">{{ change.recorded_at|date:"F j, Y" }}</td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  {% else %}
+    <div class="card-body small text-muted">No changes recorded. He has been Active since he was hired.</div>
+  {% endif %}
 </div>
 
 <div class="card mb-3">

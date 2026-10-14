@@ -23,7 +23,10 @@ ABSENT = "Absent"
 # PLACEHOLDERS. Ask the agency owner for the real values (CLAUDE.md open item 5).
 AGENCY_NAME = "Agency name (placeholder)"
 AGENCY_ADDRESS = "Agency address (placeholder)"
-AGENCY_LTO_NUMBER = "LTO number (placeholder)"
+
+# The LTO number comes from the License to Operate on the Agency permits page.
+# When none is on file, or it has expired, the header prints this instead.
+LTO_NOT_ON_FILE = "LTO not on file"
 
 # The report number is the ID of the REPORT audit entry, for example GR-RPT-000123.
 REPORT_NUMBER_PREFIX = "GR-RPT-"

@@ -36,14 +36,24 @@ def long_date(value):
     return f"{value:%B} {value.day}, {value.year}"
 
 
-def long_datetime(value):
+def clock_time(value, seconds=True):
+    """
+    Format the time of a datetime or time like 3:05:09 PM, or 3:05 PM with
+    seconds=False. The hour has no leading zero.
+    """
+    hour = value.hour % 12 or 12
+    half_of_day = "AM" if value.hour < 12 else "PM"
+    shown = f"{hour}:{value:%M:%S}" if seconds else f"{hour}:{value:%M}"
+    return f"{shown} {half_of_day}"
+
+
+def long_datetime(value, zone=None):
     """
     Format a date and time in Philippine time (settings.TIME_ZONE), like
-    October 12, 2026, 3:05:09 PM. Returns an empty string for None.
+    October 12, 2026, 3:05:09 PM. Pass zone to name the time zone yourself.
+    Returns an empty string for None.
     """
     if value is None:
         return ""
-    local = timezone.localtime(value)
-    hour = local.hour % 12 or 12
-    half_of_day = "AM" if local.hour < 12 else "PM"
-    return f"{long_date(local.date())}, {hour}:{local:%M:%S} {half_of_day}"
+    local = timezone.localtime(value, zone)
+    return f"{long_date(local.date())}, {clock_time(local)}"

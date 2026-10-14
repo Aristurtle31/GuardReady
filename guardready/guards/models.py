@@ -4,20 +4,35 @@ Guards app models.
 INHERITANCE: Person (abstract) -> Employee (abstract) -> Guard (concrete).
 Only Guard gets a database table. It has the fields of all three classes.
 
+ExpiringDocument is an abstract model (no table) for any paper with a
+number, an issue date and an expiry date. It holds the shared expiry rules
+(days left, status, notice days, the notice band) and the shared steps of
+renew() and make_notice(). Credential (a guard's document) and AgencyPermit
+(the agency's own permit, like its License to Operate) both extend it.
+
+ExpiryNotice is the abstract base of the two notice models: Notification (a
+guard's document) and AgencyNotice (an agency permit). They share the fields,
+message(), move_to() and the rest. Each one only says whose document it is.
+
 Credential is one table with four proxy subclasses: License, Clearance,
 MedicalCert, and TrainingCert. A proxy shares the same table but has its
 own Python methods (POLYMORPHISM).
+
+EmploymentStatusChange is the append-only history of a guard's employment
+status. The rules for each status live in guards/status.py.
 """
 
 from django.conf import settings
 from django.core.exceptions import ValidationError
 from django.db import models
 from django.utils import timezone
+from django.utils.text import slugify
 
 from audit.models import AppendOnlyRecord, RecordLockedError
 
 from . import constants as c
-from .dates import add_months, nice_date
+from .dates import add_months, long_date, nice_date
+from .status import STATUS_CLASSES, ActiveStatus
 
 
 # ---------------------------------------------------------------------------
@@ -216,6 +231,88 @@ class Guard(Employee):
         open_assignments = self.assignments.filter(end_date__isnull=True)
         return open_assignments.select_related("post__site").first()
 
+    # --- Employment status (the rules for each status are in guards/status.py) ---
+
+    def status_history(self):
+        """Every status change, newest first: by effective date, then by the time it was recorded."""
+        return sorted(
+            self.status_changes.all(),
+            key=lambda change: (change.effective_date, change.recorded_at, change.pk),
+            reverse=True,
+        )
+
+    def employment_status(self):
+        """The status object for his latest change. A guard with no record is Active."""
+        history = self.status_history()
+        if not history:
+            return ActiveStatus()
+        return history[0].as_status()
+
+    def check_status_change(self, status, reason, effective_date):
+        """The rules for a status change. Raises ValidationError with every problem found."""
+        if status not in STATUS_CLASSES:
+            raise ValidationError(f"{status} is not an employment status.")
+        current = self.employment_status()
+        new = STATUS_CLASSES[status]()
+        errors = []
+        if status not in current.next_statuses():
+            errors.append(f"A guard who is {current} cannot change to {status}.")
+        if reason not in new.reasons():
+            errors.append(f'"{reason}" is not a reason for {status}.')
+        if effective_date > timezone.localdate():
+            errors.append("The effective date cannot be in the future.")
+        if effective_date < self.date_hired:
+            errors.append(
+                f"The effective date cannot be before he was hired ({long_date(self.date_hired)})."
+            )
+        if current.effective_date and effective_date < current.effective_date:
+            errors.append(
+                "The effective date cannot be before his last status change "
+                f"({long_date(current.effective_date)})."
+            )
+        posting = self.current_assignment()
+        if posting and not new.can_be_assigned() and effective_date < posting.start_date:
+            errors.append(
+                "The effective date is before his current posting started "
+                f"({long_date(posting.start_date)}). Use that date or a later one."
+            )
+        if errors:
+            raise ValidationError(errors)
+
+    def change_employment_status(self, status, reason, effective_date, by_user):
+        """
+        ENCAPSULATION: the only way to change a guard's employment status.
+        It checks the rules, saves an EmploymentStatusChange, closes his open
+        posting if he can no longer be posted, and turns his login off (or back
+        on) to match the new status. Returns the new status and a list of what
+        else changed, for the audit log.
+        """
+        self.check_status_change(status, reason, effective_date)
+        change = EmploymentStatusChange.objects.create(
+            guard=self,
+            status=status,
+            reason=reason,
+            effective_date=effective_date,
+            recorded_by=by_user,
+        )
+        new = change.as_status()
+
+        effects = []
+        posting = self.current_assignment()
+        if posting is not None and not new.can_be_assigned():
+            posting.close(effective_date)
+            effects.append(
+                f"His open posting at {posting.post} was closed on {long_date(effective_date)}"
+            )
+        if self.user is not None and self.user.is_active != new.allows_login():
+            # Django refuses an inactive user on his next click, so he is logged out.
+            self.user.is_active = new.allows_login()
+            self.user.save(update_fields=["is_active"])
+            effects.append(
+                f"Login {c.LOGIN_CHANGE_NOTES[new.allows_login()]} for user {self.user.username}"
+            )
+        return new, effects
+
 
 def missing_row(doc_type):
     """A profile table row for a document that is not on file."""
@@ -233,24 +330,147 @@ def missing_row(doc_type):
 
 
 # ---------------------------------------------------------------------------
+# Expiring documents: the shared abstract base
+# ---------------------------------------------------------------------------
+
+
+class ExpiringDocument(models.Model):
+    """ABSTRACTION: a paper with a number, an issue date and an expiry date. It has no table."""
+
+    number = models.CharField(max_length=50)
+    issued = models.DateField()
+    expires = models.DateField()
+
+    class Meta:
+        abstract = True
+
+    def __str__(self):
+        return self.number
+
+    # --- What every kind of document must answer (POLYMORPHISM) ---
+
+    def validity_months(self):
+        """Every proxy class must override this. Call typed() first."""
+        raise NotImplementedError("Call typed() to get the proxy class first.")
+
+    def notice_days(self):
+        """Days before expiry when a notice is sent. One kind can override it later."""
+        return list(c.NOTICE_DAYS)
+
+    # --- Status, the same for every document ---
+
+    def days_left(self):
+        return (self.expires - timezone.localdate()).days
+
+    def status(self):
+        """
+        Expired, Expiring soon, or Valid.
+        A document counts as expired on its expiry date, so the status and
+        the "Expired" notice always agree.
+        """
+        days = self.days_left()
+        if days <= 0:
+            return c.EXPIRED
+        if days <= max(self.notice_days()):
+            return c.EXPIRING_SOON
+        return c.VALID
+
+    def notice_band(self):
+        """
+        The notice band this document is in today:
+        60, 30, 14, 7, 1, 0 (expired), or None if no notice is due yet.
+        """
+        days = self.days_left()
+        if days <= 0:
+            return c.EXPIRED_BAND
+        bands_reached = [band for band in self.notice_days() if days <= band]
+        if not bands_reached:
+            return None
+        return min(bands_reached)
+
+    def expiry_text(self):
+        """One short line, like "valid until October 18, 2028" or "expired on October 8, 2026"."""
+        days = self.days_left()
+        unit = "day" if days == 1 else "days"
+        return c.EXPIRY_TEXTS[self.status()].format(
+            date=long_date(self.expires), days=f"{days} {unit}"
+        )
+
+    # --- Changes, the same steps for every document ---
+
+    @staticmethod
+    def check_values(number, issued, expires):
+        """Validation rules for adding and renewing."""
+        errors = []
+        if not number or not number.strip():
+            errors.append("The document number cannot be blank.")
+        if issued > timezone.localdate():
+            errors.append("The issue date cannot be in the future.")
+        if expires <= issued:
+            errors.append("The expiry date must be after the issue date.")
+        if errors:
+            raise ValidationError(errors)
+
+    def renew(self, number, issued, expires, by_user, changed_at=None):
+        """
+        ENCAPSULATION: the only way to change a document's number and dates.
+        The old values are saved in a version record first.
+        changed_at is only passed by seed_demo to record a past renewal.
+        """
+        self.check_values(number, issued, expires)
+        self._save_version(by_user, changed_at or timezone.now())
+        self.number = number.strip()
+        self.issued = issued
+        self.expires = expires
+        self.save()
+
+    def _save_version(self, by_user, changed_at):
+        """Keep the values on file now in a version record. Each child has its own model."""
+        raise NotImplementedError("Each kind of document saves its own version record.")
+
+    # --- Expiry notices. Stage 2's check_expiry() calls make_notice() ---
+
+    def make_notice(self):
+        """
+        Make the notice for the band this document is in today, once.
+        Each notice model is unique on (document, band, expiry date), so a
+        band is never sent twice, and a renewal with a new expiry starts again.
+        Returns the new notice, or None if no notice is due or it was made before.
+        """
+        band = self.notice_band()
+        if band is None:
+            return None
+        notice, created = self._notices().get_or_create(
+            band=band, expiry_date=self.expires, defaults=self._notice_extra()
+        )
+        return notice if created else None
+
+    def _notices(self):
+        """This document's notices (a related manager). Each child names its own."""
+        raise NotImplementedError("Each kind of document has its own notices.")
+
+    def _notice_extra(self):
+        """Other fields a new notice needs. None, unless a child adds some."""
+        return {}
+
+
+# ---------------------------------------------------------------------------
 # Credentials: one table, four proxy classes
 # ---------------------------------------------------------------------------
 
 
-class Credential(models.Model):
+class Credential(ExpiringDocument):
     """
     One document of one guard. The kind field says which proxy class
     (License, Clearance, MedicalCert, TrainingCert) the row belongs to.
     Credentials can be added and renewed. They can never be deleted.
+    number, issued and expires come from ExpiringDocument.
     """
 
     guard = models.ForeignKey(Guard, on_delete=models.PROTECT, related_name="credentials")
     kind = models.CharField(max_length=20, choices=c.CREDENTIAL_KIND_CHOICES)
     doc_type = models.CharField(max_length=40, choices=c.DOCUMENT_CHOICES)
-    number = models.CharField(max_length=50)
     issuer = models.CharField(max_length=100, blank=True)
-    issued = models.DateField()
-    expires = models.DateField()
     # Only medical certificates use this field. It is sensitive.
     result = models.CharField(max_length=100, blank=True)
     updated_at = models.DateTimeField(auto_now=True)
@@ -288,14 +508,7 @@ class Credential(models.Model):
         return cls(kind=c.DOCUMENT_KINDS[doc_type], doc_type=doc_type).typed()
 
     # --- Methods the proxy classes override (POLYMORPHISM) ---
-
-    def validity_months(self):
-        """Every proxy class must override this. Call typed() first."""
-        raise NotImplementedError("Call typed() to get the proxy class first.")
-
-    def notice_days(self):
-        """Days before expiry when a notice is sent. One kind can override it later."""
-        return list(c.NOTICE_DAYS)
+    # validity_months() and notice_days() come from ExpiringDocument.
 
     def is_sensitive(self):
         return False
@@ -317,63 +530,16 @@ class Credential(models.Model):
             "on_file": True,
         }
 
-    # --- Status ---
-
-    def days_left(self):
-        return (self.expires - timezone.localdate()).days
-
-    def status(self):
-        """
-        Expired, Expiring soon, or Valid.
-        A document counts as expired on its expiry date, so the status and
-        the "Expired" notice always agree.
-        """
-        days = self.days_left()
-        if days <= 0:
-            return c.EXPIRED
-        if days <= max(self.notice_days()):
-            return c.EXPIRING_SOON
-        return c.VALID
-
-    def notice_band(self):
-        """
-        The notice band this credential is in today:
-        60, 30, 14, 7, 1, 0 (expired), or None if no notice is due yet.
-        """
-        days = self.days_left()
-        if days <= 0:
-            return c.EXPIRED_BAND
-        bands_reached = [band for band in self.notice_days() if days <= band]
-        if not bands_reached:
-            return None
-        return min(bands_reached)
+    # --- Status: days_left(), status() and notice_band() come from ExpiringDocument ---
 
     def suggested_expiry(self, issued):
         """Pre-fill value for the expiry date: issue date + validity months."""
         return add_months(issued, self.validity_months())
 
-    # --- Changes ---
+    # --- Changes: check_values() and renew() come from ExpiringDocument ---
 
-    @staticmethod
-    def check_values(number, issued, expires):
-        """Validation rules for adding and renewing."""
-        errors = []
-        if not number or not number.strip():
-            errors.append("The document number cannot be blank.")
-        if issued > timezone.localdate():
-            errors.append("The issue date cannot be in the future.")
-        if expires <= issued:
-            errors.append("The expiry date must be after the issue date.")
-        if errors:
-            raise ValidationError(errors)
-
-    def renew(self, number, issued, expires, by_user, changed_at=None):
-        """
-        ENCAPSULATION: the only way to change a credential's number and dates.
-        The old values are saved in a CredentialVersion first.
-        changed_at is only passed by seed_demo to record a past renewal.
-        """
-        Credential.check_values(number, issued, expires)
+    def _save_version(self, by_user, changed_at):
+        """renew() calls this first. The old values and the old result go in a CredentialVersion."""
         CredentialVersion.objects.create(
             credential=self,
             old_number=self.number,
@@ -381,12 +547,17 @@ class Credential(models.Model):
             old_expires=self.expires,
             old_result=self.result,
             changed_by=by_user,
-            changed_at=changed_at or timezone.now(),
+            changed_at=changed_at,
         )
-        self.number = number.strip()
-        self.issued = issued
-        self.expires = expires
-        self.save()
+
+    # --- Notices: make_notice() comes from ExpiringDocument ---
+
+    def _notices(self):
+        return self.notifications
+
+    def _notice_extra(self):
+        """A guard's notice also names the guard, for the notifications page."""
+        return {"guard": self.guard}
 
 
 class License(Credential):
@@ -484,16 +655,36 @@ class CredentialVersion(AppendOnlyRecord):
         return f"{self.credential.doc_type} before {self.changed_at:%Y-%m-%d}"
 
 
+class EmploymentStatusChange(AppendOnlyRecord):
+    """One change of a guard's employment status. Never edited or deleted."""
+
+    guard = models.ForeignKey(Guard, on_delete=models.PROTECT, related_name="status_changes")
+    status = models.CharField(max_length=20, choices=c.EMPLOYMENT_STATUS_CHOICES)
+    effective_date = models.DateField()
+    reason = models.CharField(max_length=40, choices=c.STATUS_REASON_CHOICES)
+    recorded_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.PROTECT, related_name="status_changes_recorded"
+    )
+    recorded_at = models.DateTimeField(default=timezone.now)
+
+    class Meta(AppendOnlyRecord.Meta):
+        ordering = ["-effective_date", "-recorded_at", "-id"]
+
+    def __str__(self):
+        return f"{self.guard.full_name}: {self.status} from {long_date(self.effective_date)}"
+
+    def as_status(self):
+        """FACTORY: this change as its status object (ActiveStatus, OnLeaveStatus, ...)."""
+        return STATUS_CLASSES[self.status](self)
+
+
 # ---------------------------------------------------------------------------
-# Expiry notifications
+# Expiry notices: an abstract base, then one model per kind of document
 # ---------------------------------------------------------------------------
 
 
-class Notification(models.Model):
-    """
-    An in-app expiry notice for one credential in one band.
-    The unique constraint makes sure a band is never sent twice.
-    """
+class ExpiryNotice(models.Model):
+    """ABSTRACTION: an in-app expiry notice for one document in one band. It has no table."""
 
     NEW = "New"
     SEEN = "Seen"
@@ -502,22 +693,13 @@ class Notification(models.Model):
     STATUS_CHOICES = [(status, status) for status in STATUS_ORDER]
     BAND_CHOICES = list(c.NOTICE_BAND_LABELS.items())
 
-    guard = models.ForeignKey(Guard, on_delete=models.PROTECT, related_name="notifications")
-    credential = models.ForeignKey(
-        Credential, on_delete=models.PROTECT, related_name="notifications"
-    )
     band = models.PositiveSmallIntegerField(choices=BAND_CHOICES)
     expiry_date = models.DateField()
     created_date = models.DateField(default=timezone.localdate)
     status = models.CharField(max_length=10, choices=STATUS_CHOICES, default=NEW)
 
     class Meta:
-        ordering = ["-created_date", "band"]
-        constraints = [
-            models.UniqueConstraint(
-                fields=["credential", "band", "expiry_date"], name="one_notice_per_band"
-            ),
-        ]
+        abstract = True
 
     def __str__(self):
         return self.message()
@@ -525,15 +707,27 @@ class Notification(models.Model):
     def delete(self, *args, **kwargs):
         raise RecordLockedError("Notices cannot be deleted.")
 
+    # --- What every kind of notice must answer (POLYMORPHISM) ---
+
+    def _who(self):
+        """Whose document it is: a guard's name, or the agency."""
+        raise NotImplementedError("Each kind of notice says whose document it is.")
+
+    def _document_name(self):
+        """The name of the document, like "NBI Clearance"."""
+        raise NotImplementedError("Each kind of notice names its document.")
+
+    # --- Shared steps, the same for every notice ---
+
     def message(self):
         """Document name and date only. Never a result."""
-        doc_type = self.credential.doc_type
+        who, document = self._who(), self._document_name()
         when = nice_date(self.expiry_date)
         if self.band == c.EXPIRED_BAND:
-            return f"{self.guard.full_name}: {doc_type} has expired ({when})."
+            return f"{who}: {document} has expired ({when})."
         days = (self.expiry_date - self.created_date).days
         unit = "day" if days == 1 else "days"
-        return f"{self.guard.full_name}: {doc_type} expires in {days} {unit} ({when})."
+        return f"{who}: {document} expires in {days} {unit} ({when})."
 
     def is_urgent(self):
         """7 day, 1 day, and expired notices go in the dashboard banner."""
@@ -556,3 +750,195 @@ class Notification(models.Model):
 
     def resolve(self):
         return self.move_to(self.RESOLVED)
+
+
+class Notification(ExpiryNotice):
+    """
+    An in-app expiry notice for one guard's credential in one band.
+    The unique constraint makes sure a band is never sent twice.
+    """
+
+    guard = models.ForeignKey(Guard, on_delete=models.PROTECT, related_name="notifications")
+    credential = models.ForeignKey(
+        Credential, on_delete=models.PROTECT, related_name="notifications"
+    )
+
+    class Meta:
+        ordering = ["-created_date", "band"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["credential", "band", "expiry_date"], name="one_notice_per_band"
+            ),
+        ]
+
+    def _who(self):
+        return self.guard.full_name
+
+    def _document_name(self):
+        return self.credential.doc_type
+
+
+# ---------------------------------------------------------------------------
+# Agency permits: the agency's own papers, like its License to Operate
+# ---------------------------------------------------------------------------
+
+
+class AgencyPermit(ExpiringDocument):
+    """
+    One permit of the agency itself. The kind field says which proxy class
+    (only LicenseToOperate for now) the row belongs to. One row per kind.
+    Permits can be added and renewed. They can never be deleted.
+    number, issued and expires come from ExpiringDocument.
+    """
+
+    kind = models.CharField(max_length=20, choices=c.PERMIT_KIND_CHOICES)
+    issuer = models.CharField(max_length=100, blank=True)
+
+    class Meta:
+        ordering = ["kind"]
+        # No "change" or "delete" permission. Changes go through renew().
+        default_permissions = ("add", "view")
+        constraints = [
+            models.UniqueConstraint(fields=["kind"], name="one_permit_per_kind"),
+        ]
+
+    def __str__(self):
+        return f"{self.name()} {self.number}"
+
+    def delete(self, *args, **kwargs):
+        raise RecordLockedError("Agency permits cannot be deleted. Renew them instead.")
+
+    def name(self):
+        """Like "License to Operate (LTO)"."""
+        return self.get_kind_display()
+
+    def typed(self):
+        """Return this row as its proxy class, like typed() on Credential. No extra query."""
+        self.__class__ = PERMIT_TYPES[self.kind]
+        return self
+
+    @classmethod
+    def for_kind(cls, kind):
+        """FACTORY: an unsaved permit of the right proxy class, like create_account()."""
+        return cls(kind=kind).typed()
+
+    @classmethod
+    def on_file(cls, kind):
+        """The permit of this kind as its proxy class, or None if it is not on file."""
+        permit = cls.objects.filter(kind=kind).first()
+        return permit.typed() if permit else None
+
+    @classmethod
+    def usable(cls, kind):
+        """The permit of this kind if it is on file and not expired, or None."""
+        permit = cls.on_file(kind)
+        if permit is None or permit.status() == c.EXPIRED:
+            return None
+        return permit
+
+    @classmethod
+    def add(cls, kind, number, issued, expires, issuer=""):
+        """The only way to put a permit on file. Returns the new permit."""
+        if kind not in PERMIT_TYPES:
+            raise ValidationError(f"{kind} is not an agency permit GuardReady tracks.")
+        if cls.objects.filter(kind=kind).exists():
+            name = cls.for_kind(kind).name()
+            raise ValidationError(f"{name} is already on file. Renew it instead.")
+        cls.check_values(number, issued, expires)
+        permit = cls(
+            kind=kind, number=number.strip(), issuer=issuer, issued=issued, expires=expires
+        ).typed()
+        permit.save()
+        return permit
+
+    @classmethod
+    def overview(cls, kind):
+        """
+        A short status for the dashboard and the compliance request form, even
+        when the permit is not on file: its name, the permit, status, text, color.
+        """
+        permit = cls.on_file(kind)
+        status = permit.status() if permit else c.NOT_ON_FILE
+        return {
+            "name": cls.for_kind(kind).name(),
+            "slug": slugify(kind),
+            "permit": permit,
+            "status": status,
+            "text": permit.expiry_text() if permit else c.PERMIT_MISSING_TEXT,
+            "color": c.PERMIT_ALERT_COLORS[status],
+        }
+
+    # --- renew() comes from ExpiringDocument ---
+
+    def _save_version(self, by_user, changed_at):
+        """renew() calls this first. The old values go in an AgencyPermitVersion."""
+        AgencyPermitVersion.objects.create(
+            permit=self,
+            old_number=self.number,
+            old_issued=self.issued,
+            old_expires=self.expires,
+            changed_by=by_user,
+            changed_at=changed_at,
+        )
+
+    # --- make_notice() comes from ExpiringDocument ---
+
+    def _notices(self):
+        return self.notices
+
+
+class LicenseToOperate(AgencyPermit):
+    """The agency's License to Operate (LTO), a PNP permit."""
+
+    class Meta:
+        proxy = True
+        default_permissions = ()
+
+    def validity_months(self):
+        """PLACEHOLDER. Only shown as information. HR always types the expiry date."""
+        return c.LTO_VALIDITY_MONTHS
+
+
+# typed() uses this to pick the right proxy class, like ACCOUNT_TYPES in the bank activity.
+PERMIT_TYPES = {
+    c.LTO: LicenseToOperate,
+}
+
+
+class AgencyPermitVersion(AppendOnlyRecord):
+    """The old values of an agency permit, saved by renew(). Never changes."""
+
+    permit = models.ForeignKey(AgencyPermit, on_delete=models.PROTECT, related_name="versions")
+    old_number = models.CharField(max_length=50)
+    old_issued = models.DateField()
+    old_expires = models.DateField()
+    changed_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.PROTECT, related_name="permit_changes"
+    )
+    changed_at = models.DateTimeField(default=timezone.now)
+
+    class Meta(AppendOnlyRecord.Meta):
+        ordering = ["-changed_at", "-id"]
+
+    def __str__(self):
+        return f"{self.permit.name()} before {self.changed_at:%Y-%m-%d}"
+
+
+class AgencyNotice(ExpiryNotice):
+    """An in-app expiry notice for one agency permit in one band. Never sent twice."""
+
+    permit = models.ForeignKey(AgencyPermit, on_delete=models.PROTECT, related_name="notices")
+
+    class Meta:
+        ordering = ["-created_date", "band"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["permit", "band", "expiry_date"], name="one_agency_notice_per_band"
+            ),
+        ]
+
+    def _who(self):
+        return c.AGENCY_NOTICE_NAME
+
+    def _document_name(self):
+        return self.permit.name()

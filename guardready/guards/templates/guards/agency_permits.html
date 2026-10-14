@@ -1,0 +1,73 @@
+{% extends "base.html" %}
+{% load guard_tags %}
+{% block title %}Agency permits{% endblock %}
+{% block content %}
+<h1 class="h3 mb-1">Agency permits</h1>
+<p class="text-muted small mb-3">
+  The agency's own permits, tracked like guard documents. A permit cannot be deleted.
+  Renewing or correcting one keeps the old values in the change history below.
+</p>
+
+<div class="table-responsive">
+  <table class="table bg-white align-middle">
+    <thead>
+      <tr>
+        <th>Permit</th><th>Number</th><th>Issued by</th><th>Date issued</th>
+        <th>Expiry date</th><th>Days left</th><th>Status</th><th></th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for row in permits %}
+        <tr>
+          <td>{{ row.name }}</td>
+          {% if row.permit %}
+            <td>{{ row.permit.number }}</td>
+            <td>{{ row.permit.issuer|default:"Not given" }}</td>
+            <td>{{ row.permit.issued|date:"F j, Y" }}</td>
+            <td>{{ row.permit.expires|date:"F j, Y" }}</td>
+            <td>{{ row.permit.days_left }}</td>
+          {% else %}
+            <td colspan="5" class="text-muted">Not on file yet.</td>
+          {% endif %}
+          <td><span class="badge text-bg-{{ row.status|badge }}">{{ row.status }}</span></td>
+          <td class="text-end">
+            {% if row.permit %}
+              <a class="btn btn-outline-primary btn-sm" href="{% url 'renew_permit' row.slug %}">Renew or correct</a>
+            {% else %}
+              <a class="btn btn-primary btn-sm" href="{% url 'add_permit' row.slug %}">Add</a>
+            {% endif %}
+          </td>
+        </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+
+<h2 class="h5 mt-4">Change history</h2>
+{% if versions %}
+  <div class="table-responsive">
+    <table class="table table-sm bg-white">
+      <thead>
+        <tr>
+          <th>Changed on</th><th>Permit</th><th>Old number</th><th>Old date issued</th>
+          <th>Old expiry date</th><th>Changed by</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for version in versions %}
+          <tr>
+            <td>{{ version.changed_at|date:"F j, Y, g:i A" }}</td>
+            <td>{{ version.permit.name }}</td>
+            <td>{{ version.old_number }}</td>
+            <td>{{ version.old_issued|date:"F j, Y" }}</td>
+            <td>{{ version.old_expires|date:"F j, Y" }}</td>
+            <td>{{ version.changed_by.get_full_name|default:version.changed_by.username }}</td>
+          </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+{% else %}
+  <p class="text-muted small">No renewals or corrections yet.</p>
+{% endif %}
+{% endblock %}

@@ -72,7 +72,8 @@ class SeedAccountTests(TestCase):
     def test_seed_is_safe_to_run_twice(self):
         seed()
         self.assertEqual(User.objects.count(), 2)
-        self.assertEqual(Guard.objects.count(), 8)
+        # 8 current guards plus 1 who resigned (added with employment status).
+        self.assertEqual(Guard.objects.count(), 9)
 
     def test_admin_account_has_every_admin_permission(self):
         admin = User.objects.get(username="admin")

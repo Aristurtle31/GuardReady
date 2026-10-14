@@ -95,8 +95,13 @@ class Assignment(models.Model):
     def start(cls, guard, post, by_user, start_date=None):
         """
         Open a new assignment. Only assign_guard() and seed_demo call this.
-        assign_guard() does the readiness check first.
+        assign_guard() does the readiness check first. A guard whose employment
+        status cannot be assigned (On leave, Resigned, Let go) is always refused
+        here, with the reason "On leave" or "No longer employed".
         """
+        status = guard.employment_status()
+        if not status.can_be_assigned():
+            raise ValidationError(status.refusal_reason())
         return cls.objects.create(
             guard=guard,
             post=post,

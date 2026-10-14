@@ -96,6 +96,75 @@ GOVERNMENT_NUMBER_FIELDS = ["sss_number", "tin_number", "philhealth_number"]
 NUMBER_TEXT_PATTERN = r"^\+?[0-9 -]*[0-9][0-9 -]*$"
 NUMBER_TEXT_MESSAGE = "Use only digits, spaces and dashes. A + is allowed at the start."
 
+# ---------------------------------------------------------------------------
+# Employment status (guards/status.py has the rules for each one)
+# ---------------------------------------------------------------------------
+
+# A guard with no status change on record is Active.
+ACTIVE = "Active"
+ON_LEAVE = "On leave"
+RESIGNED = "Resigned"
+LET_GO = "Let go"
+EMPLOYMENT_STATUSES = [ACTIVE, ON_LEAVE, RESIGNED, LET_GO]
+EMPLOYMENT_STATUS_CHOICES = [(status, status) for status in EMPLOYMENT_STATUSES]
+
+# The reasons each status allows. PLACEHOLDERS, to be confirmed with the agency.
+# There is no free text, and no reason may hint at health, a case, or discipline.
+# The model keeps these as choices, so changing them needs "makemigrations".
+ACTIVE_REASONS = ["Hired", "Back from leave", "Rehired", "Correction"]
+ON_LEAVE_REASONS = ["Approved leave"]
+RESIGNED_REASONS = ["Resigned"]
+LET_GO_REASONS = ["End of contract", "Terminated", "Other"]
+STATUS_REASON_CHOICES = [
+    (reason, reason)
+    for reason in ACTIVE_REASONS + ON_LEAVE_REASONS + RESIGNED_REASONS + LET_GO_REASONS
+]
+
+# Why a guard who cannot be posted is refused.
+ON_LEAVE_REFUSAL = "On leave"
+SEPARATED_REFUSAL = "No longer employed"
+
+# Written in the audit entry when a status change turns his login off or on.
+LOGIN_CHANGE_NOTES = {True: "turned back on", False: "turned off"}
+
+# The guard list shows current guards, unless the filter asks for guards who left.
+SHOW_CURRENT = "current"
+SHOW_LEFT = "left"
+EMPLOYMENT_FILTERS = {SHOW_CURRENT: "Current guards", SHOW_LEFT: "Guards who left"}
+
+# ---------------------------------------------------------------------------
+# Agency permits: the agency's own papers (guards/models.py AgencyPermit)
+# ---------------------------------------------------------------------------
+
+# Permit kinds. Each kind has its own proxy model. Only the LTO for now.
+LTO = "LTO"
+PERMIT_KIND_CHOICES = [(LTO, "License to Operate (LTO)")]
+
+# The name of each permit in a URL, like "lto".
+PERMIT_SLUGS = {slugify(kind): kind for kind, _ in PERMIT_KIND_CHOICES}
+
+# PLACEHOLDER: 5 years. The PNP can set a shorter period, so the expiry date
+# is never filled in for HR. HR types the date printed on the permit.
+LTO_VALIDITY_MONTHS = 60
+
+# An agency notice names the agency instead of a guard.
+AGENCY_NOTICE_NAME = "Agency"
+
+# One line about a permit on the dashboard and the compliance request form.
+EXPIRY_TEXTS = {
+    VALID: "valid until {date}",
+    EXPIRING_SOON: "expires in {days}, on {date}",
+    EXPIRED: "expired on {date}",
+}
+PERMIT_MISSING_TEXT = "not on file"
+# Alert color for that line. A missing permit is as serious as an expired one.
+PERMIT_ALERT_COLORS = {
+    VALID: "success",
+    EXPIRING_SOON: "warning",
+    EXPIRED: "danger",
+    NOT_ON_FILE: "danger",
+}
+
 # Guard types. Placeholder list, to be confirmed with the agency.
 GUARD_TYPES = [
     "Unarmed Security Guard",
@@ -113,4 +182,8 @@ STATUS_COLORS = {
     EXPIRED: "danger",
     NOT_CLEARED: "danger",
     NOT_ON_FILE: "secondary",
+    ACTIVE: "success",
+    ON_LEAVE: "info",
+    RESIGNED: "secondary",
+    LET_GO: "secondary",
 }

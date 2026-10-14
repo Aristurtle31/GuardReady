@@ -5,14 +5,19 @@ through the model methods add_credential() and renew().
 
 OOP in this file
 - INHERITANCE: SectionForm is the base of every section form.
+  ExpiringDocumentForm holds the date checks shared by guard documents and
+  agency permits, like ExpiringDocument does for the models.
   CredentialForm -> MedicalCredentialForm adds the result field, the same way
   MedicalCert overrides uses_result(). CredentialForm -> RenewCredentialForm
   -> MedicalRenewCredentialForm does the same for a renewal.
+  PermitForm -> RenewPermitForm do the same for an agency permit.
 - POLYMORPHISM: each form has its own fields, title, sensitive fields and
   old_values(). The shared steps (styling, audit text) stay in SectionForm.
 - COMPOSITION: AddGuardForms owns every section form of the Add Guard page.
 - FACTORY: add_form_class() and renew_form_class() pick the form class with a
   dict, by asking the credential uses_result(). No if/elif on its kind.
+- StatusChangeForm offers only the next statuses the guard's current status
+  allows, and leaves every rule to Guard.check_status_change().
 """
 
 from django import forms
@@ -23,7 +28,7 @@ from django.utils import timezone
 from audit.changes import ChangeSummary
 
 from . import constants as c
-from .models import Credential, Guard
+from .models import AgencyPermit, Credential, Guard
 
 # Contact number, SSS, TIN and PhilHealth (see guards/constants.py).
 number_text = RegexValidator(c.NUMBER_TEXT_PATTERN, c.NUMBER_TEXT_MESSAGE)
@@ -188,11 +193,36 @@ class GuardGovernmentForm(SectionForm):
 
 
 # ---------------------------------------------------------------------------
+# Documents with dates: guard documents and agency permits
+# ---------------------------------------------------------------------------
+
+
+class ExpiringDocumentForm(SectionForm):
+    """The date checks shared by every document form. Never used on its own."""
+
+    def clean(self):
+        """The model's own rules: the issue date is not in the future, and expiry comes after it."""
+        cleaned = super().clean()
+        number, issued, expires = (cleaned.get(name) for name in ("number", "issued", "expires"))
+        if number and issued and expires:
+            try:
+                self._meta.model.check_values(number, issued, expires)
+            except ValidationError as error:
+                for message in error.messages:
+                    self.add_error(None, message)
+        return cleaned
+
+    def values(self):
+        """The keyword values for the add method or renew()."""
+        return {name: self.cleaned_data[name] for name in self.fields}
+
+
+# ---------------------------------------------------------------------------
 # Document (credential) sections
 # ---------------------------------------------------------------------------
 
 
-class CredentialForm(SectionForm):
+class CredentialForm(ExpiringDocumentForm):
     """One document: number, issuer and dates. Saved only through Guard.add_credential()."""
 
     # Never saved with form.save(). guards/services.py passes values() to
@@ -230,22 +260,6 @@ class CredentialForm(SectionForm):
     def title(self):
         """POLYMORPHISM: a document section is titled with the document name."""
         return self._doc_type
-
-    def clean(self):
-        """The model's own rules: the issue date is not in the future, and expiry comes after it."""
-        cleaned = super().clean()
-        number, issued, expires = (cleaned.get(name) for name in ("number", "issued", "expires"))
-        if number and issued and expires:
-            try:
-                Credential.check_values(number, issued, expires)
-            except ValidationError as error:
-                for message in error.messages:
-                    self.add_error(None, message)
-        return cleaned
-
-    def values(self):
-        """The keyword values for Guard.add_credential() or Credential.renew()."""
-        return {name: self.cleaned_data[name] for name in self.fields}
 
 
 class MedicalCredentialForm(CredentialForm):
@@ -314,6 +328,74 @@ def add_form_class(credential, show_result):
 def renew_form_class(credential, show_result):
     """The same choice for a renewal."""
     return RENEW_FORMS[credential.uses_result() and show_result]
+
+
+# ---------------------------------------------------------------------------
+# Agency permits (like the License to Operate)
+# ---------------------------------------------------------------------------
+
+
+class PermitForm(ExpiringDocumentForm):
+    """One agency permit: number, issuer and dates. Saved only through AgencyPermit.add()."""
+
+    class Meta:
+        model = AgencyPermit
+        fields = ["number", "issuer", "issued", "expires"]
+        labels = {
+            "number": "Permit number",
+            "issuer": "Issued by",
+            "issued": "Date issued",
+            "expires": "Expiry date",
+        }
+        help_texts = {
+            "expires": "Type the expiry date printed on the permit. GuardReady never fills it in.",
+        }
+        widgets = {"issued": date_input(), "expires": date_input()}
+        error_messages = {
+            "number": {"required": "Enter the permit number."},
+            "issued": {"required": "Enter the date issued."},
+            "expires": {"required": "Enter the expiry date printed on the permit."},
+        }
+
+    def __init__(self, *args, permit, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._permit = permit
+
+    @property
+    def title(self):
+        """POLYMORPHISM: a permit section is titled with the permit name."""
+        return self._permit.name()
+
+
+class RenewPermitForm(PermitForm):
+    """Renew or correct an agency permit on file. Saved only through renew()."""
+
+    # There is no issuer field: renew() keeps the issuer, because
+    # AgencyPermitVersion has no old issuer (the same as guard documents).
+    NOTHING_CHANGED = RenewCredentialForm.NOTHING_CHANGED
+
+    class Meta(PermitForm.Meta):
+        fields = ["number", "issued", "expires"]
+
+    def __init__(self, *args, permit, **kwargs):
+        # ENCAPSULATION: the stored values are copied before anything can change them.
+        self._old = {name: getattr(permit, name) for name in self._meta.fields}
+        # The number and the issue date start as they are on file, so a typo is
+        # easy to fix. The expiry date starts empty on purpose: HR types the
+        # date printed on the permit.
+        initial = {"number": permit.number, "issued": permit.issued}
+        super().__init__(*args, permit=permit, initial=initial, **kwargs)
+
+    def old_values(self):
+        """POLYMORPHISM: compare with the permit on file."""
+        return dict(self._old)
+
+    def clean(self):
+        """A save that changes nothing would only add an empty history row."""
+        cleaned = super().clean()
+        if not self.errors and not self.describe_changes(ChangeSummary()):
+            raise forms.ValidationError(self.NOTHING_CHANGED)
+        return cleaned
 
 
 # ---------------------------------------------------------------------------
@@ -398,3 +480,69 @@ class AddGuardForms:
         for form in self._details:
             form.describe_new(summary)
         return summary
+
+
+# ---------------------------------------------------------------------------
+# Employment status
+# ---------------------------------------------------------------------------
+
+
+class StatusChangeForm(forms.Form):
+    """A new employment status: one grouped list of status and reason, and an effective date."""
+
+    # The list value joins the status and the reason, like "Let go|End of contract".
+    SEPARATOR = "|"
+
+    change = forms.ChoiceField(
+        label="New status and reason",
+        error_messages={"required": "Choose the new status and reason."},
+    )
+    effective_date = forms.DateField(
+        label="Effective date",
+        widget=date_input(),
+        help_text="Not in the future, not before he was hired, and not before his last change.",
+        error_messages={"required": "Enter the effective date."},
+    )
+
+    def __init__(self, guard, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._guard = guard
+        # Only the statuses he can change to are listed, one HTML optgroup per
+        # status with its reasons. This needs no JavaScript, and Django refuses
+        # any value that is not in the list.
+        self.fields["change"].choices = [("", "Choose the new status and reason")] + [
+            (
+                status,
+                [(self.SEPARATOR.join([status, reason]), self._label(status, reason)) for reason in reasons],
+            )
+            for status, reasons in guard.employment_status().next_choices()
+        ]
+        self.fields["change"].widget.attrs["class"] = "form-select"
+        self.fields["effective_date"].widget.attrs["class"] = "form-control"
+
+    @staticmethod
+    def _label(status, reason):
+        """Each option names its status too, so the closed list still reads clearly."""
+        return status if reason == status else f"{status}: {reason}"
+
+    @property
+    def title(self):
+        return "New status"
+
+    def clean(self):
+        """The model's own rules decide, through Guard.check_status_change()."""
+        cleaned = super().clean()
+        choice, effective_date = cleaned.get("change"), cleaned.get("effective_date")
+        if choice and effective_date:
+            status, reason = choice.split(self.SEPARATOR, 1)
+            cleaned["status"], cleaned["reason"] = status, reason
+            try:
+                self._guard.check_status_change(status, reason, effective_date)
+            except ValidationError as error:
+                for message in error.messages:
+                    self.add_error(None, message)
+        return cleaned
+
+    def problems(self):
+        """Every error message in one line, for the audit log."""
+        return " ".join(error for errors in self.errors.values() for error in errors)

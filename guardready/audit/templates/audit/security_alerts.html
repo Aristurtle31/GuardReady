@@ -1,0 +1,71 @@
+{% extends "base.html" %}
+{% block title %}Security alerts{% endblock %}
+{% block content %}
+<h1 class="h3 mb-1">Security alerts</h1>
+<p class="text-muted small">
+  Worked out just now from the audit log entries since {{ since }} (the last {{ lookback_days }} days).
+  All times are Philippine time. Nothing on this page is saved.
+</p>
+
+<div class="d-flex flex-wrap gap-2 mb-3">
+  <a class="btn btn-outline-secondary btn-sm" href="{% url 'audit_log' %}">Back to the audit log</a>
+</div>
+
+{% if alerts %}
+  <p><span class="badge text-bg-danger">{{ alerts|length }} alert{{ alerts|length|pluralize }}</span> Newest first.</p>
+  <div class="table-responsive">
+    <table class="table table-sm table-striped bg-white">
+      <thead>
+        <tr><th>Rule</th><th>Username</th><th>Time window</th><th>Count</th><th>Audit log</th></tr>
+      </thead>
+      <tbody>
+        {% for alert in alerts %}
+          <tr>
+            <td>{{ alert.title }}</td>
+            <td>{{ alert.username|default:"(blank)" }}</td>
+            <td>{{ alert.window_text }}</td>
+            <td>{{ alert.count }}</td>
+            <td>
+              {% with links=alert.audit_log_links %}
+                {% for day, query in links %}
+                  <a href="{% url 'audit_log' %}?{{ query }}">See entries{% if links|length > 1 %} for {{ day }}{% endif %}</a><br>
+                {% endfor %}
+              {% endwith %}
+            </td>
+          </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+{% else %}
+  <p class="alert alert-success">No alerts. None of the rules below found anything in the last {{ lookback_days }} days.</p>
+{% endif %}
+
+<h2 class="h5 mt-4">What this page checks</h2>
+<div class="table-responsive">
+  <table class="table table-sm bg-white">
+    <thead>
+      <tr><th>Rule</th><th>What it looks for</th><th>Alerts</th></tr>
+    </thead>
+    <tbody>
+      {% for rule, count in checks %}
+        <tr>
+          <td>{{ rule.title }}</td>
+          <td>{{ rule.describe }}</td>
+          <td>
+            {% if count %}<span class="badge text-bg-danger">{{ count }} found</span>
+            {% else %}<span class="badge text-bg-success">None</span>{% endif %}
+          </td>
+        </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+
+<h2 class="h6 mt-4">About this page</h2>
+<ul class="small text-muted">
+  <li>Alerts show usernames, times and counts only. They never show what a record contains. Use "See entries" to open the matching audit log entries.</li>
+  <li>This page looks at the use of this system only: logins, refusals, unlocks and pages opened. It does not check guards on duty.</li>
+  <li>An alert only means a number went over a limit. Open the entries to see what happened.</li>
+</ul>
+{% endblock %}

@@ -58,5 +58,10 @@ def compliance_request(request, kind):
         report.assign_number(entry)
         return render(request, "reports/compliance_report.html", {"report": report})
 
-    context = {"form": form, "report_info": report_class.describe()}
+    context = {
+        "form": form,
+        "report_info": report_class.describe(),
+        # Shown when the header would print "LTO not on file".
+        "lto_warning": report_class.lto_warning(),
+    }
     return render(request, "reports/compliance_form.html", context)

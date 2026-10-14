@@ -6,7 +6,11 @@ anything that already exists is left alone. To start over, delete
 db.sqlite3 and run "python manage.py migrate" again.
 
 All dates are relative to today, so the mix stays the same on any day:
-3 cleared, 2 expiring soon, 3 not cleared.
+3 cleared, 2 expiring soon, 3 not cleared among the 8 current guards.
+A 9th guard resigned months ago, so the "Guards who left" filter and the
+status history have something to show. He is not counted.
+The agency's own License to Operate expires in 5 days (notice band 7), so
+the dashboard warns about it.
 """
 
 import random
@@ -22,8 +26,8 @@ from deployment.constants import DAY_SHIFT, NIGHT_SHIFT
 from deployment.models import Assignment, ClientSite, Post
 from guards import constants as c
 from guards.dates import add_months
-from guards.models import Credential, Guard
-from guards.services import readiness_counts
+from guards.models import AgencyPermit, Credential, Guard
+from guards.services import all_guards, current_guards, readiness_counts
 from reports.constants import LATE_GRACE_MINUTES
 from reports.models import AttendanceRecord, Evaluation
 
@@ -82,10 +86,17 @@ RESULTS = {
     c.NEURO_EXAM: "Fit for duty",
 }
 
+# The agency's own License to Operate: a demo number that expires in 5 days
+# (notice band 7). The issue date is the expiry date minus the validity.
+LTO_NUMBER = "LTO-DEMO-0001"
+LTO_ISSUER = "PNP SOSIA"
+LTO_DAYS_LEFT = 5
+
 # One dictionary per guard.
 # "problems": documents that differ from HEALTHY_DAYS_LEFT.
 #   A number is days left (negative means already expired). None means not on file.
 # "postings": (site, post, started days ago, ended days ago or None if still open)
+# "status_changes": (status, reason, days ago) for a guard who is not simply Active.
 # "late" and "absent": chances used to make the attendance mix.
 # "evaluations": (days ago, (discipline, attitude, appearance, honesty, alertness), remarks)
 GUARDS = [
@@ -206,6 +217,21 @@ GUARDS = [
         "late": 0.25, "absent": 0.10,
         "evaluations": [],
     },
+    {
+        "employee_no": "GR-0009", "first": "Noel", "last": "Castillo",
+        "guard_type": "Unarmed Security Guard", "rank": "Security Guard",
+        "born": date(1991, 3, 9), "hired_days_ago": 900,
+        "phone": "09251234509", "address": "Catalunan Grande, Davao City",
+        "sss": "34-1234509-9", "tin": "301-234-509-000", "philhealth": "12-345678509-9",
+        # He resigned 200 days ago, and nobody renewed his papers after that.
+        "problems": {c.DRUG_TEST: -20, c.NEURO_EXAM: -10, c.POLICE_CLEARANCE: -40},
+        # His posting is closed by the resignation, on the effective date.
+        # Ricardo took over the Stockroom on the same day.
+        "postings": [("Bayview Mall", "Stockroom", 400, None)],
+        "status_changes": [(c.RESIGNED, "Resigned", 200)],
+        "late": 0.10, "absent": 0.03,
+        "evaluations": [(230, (4, 4, 4, 5, 4), "Dependable on the night shift.")],
+    },
 ]
 
 # Past renewals: (employee no, document). The old version is kept.
@@ -227,6 +253,7 @@ class Command(BaseCommand):
         self.create_groups()
         self.users = self.create_users()
         self.posts = self.create_sites()
+        lto = self.create_agency_permits()
 
         created = 0
         for data in GUARDS:
@@ -235,10 +262,14 @@ class Command(BaseCommand):
             self.create_guard(data)
             created += 1
 
-        counts = readiness_counts(Guard.objects.prefetch_related("credentials"))
+        guards = list(all_guards())
+        current = current_guards(guards)
+        counts = readiness_counts(current)
         self.stdout.write(self.style.SUCCESS(f"Done. {created} new guards created."))
         for level, count in counts.items():
             self.stdout.write(f"  {level}: {count}")
+        self.stdout.write(f"  Guards who left (not counted): {len(guards) - len(current)}")
+        self.stdout.write(f"  Agency {lto.name()}: {lto.expiry_text()}")
 
     # --- Groups and users ---
 
@@ -274,6 +305,17 @@ class Command(BaseCommand):
                 posts[(site_name, post_name)] = post
         return posts
 
+    # --- The agency's own permits ---
+
+    def create_agency_permits(self):
+        """The License to Operate, added only if none is on file yet. Returns it."""
+        lto = AgencyPermit.on_file(c.LTO)
+        if lto is None:
+            expires = self.today + timedelta(days=LTO_DAYS_LEFT)
+            issued = add_months(expires, -AgencyPermit.for_kind(c.LTO).validity_months())
+            lto = AgencyPermit.add(c.LTO, LTO_NUMBER, issued, expires, issuer=LTO_ISSUER)
+        return lto
+
     # --- One guard with everything that belongs to him ---
 
     def create_guard(self, data):
@@ -295,6 +337,7 @@ class Command(BaseCommand):
         )
         self.create_credentials(guard, data)
         self.create_postings(guard, data)
+        self.record_status_changes(guard, data)
         self.create_attendance(guard, data)
         self.create_evaluations(guard, data)
 
@@ -334,6 +377,11 @@ class Command(BaseCommand):
             )
             if ended is not None:
                 assignment.close(self.days_ago(ended))
+
+    def record_status_changes(self, guard, data):
+        """Through the model's own method, so an open posting is closed on the effective date."""
+        for status, reason, days_ago in data.get("status_changes", []):
+            guard.change_employment_status(status, reason, self.days_ago(days_ago), self.users["admin"])
 
     def create_attendance(self, guard, data):
         """The last 4 weeks the guard was posted. Sundays are rest days."""

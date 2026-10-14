@@ -10,18 +10,25 @@
 </div>
 
 <form method="get" class="row g-2 mb-3">
-  <div class="col-sm-6">
+  <div class="col-md-4">
     <input type="text" name="q" value="{{ query }}" class="form-control" placeholder="Search by name or employee no.">
   </div>
-  <div class="col-sm-3">
-    <select name="status" class="form-select">
+  <div class="col-md-3">
+    <select name="show" class="form-select" aria-label="Which guards">
+      {% for value, label in show_options.items %}
+        <option value="{{ value }}" {% if value == show %}selected{% endif %}>{{ label }}</option>
+      {% endfor %}
+    </select>
+  </div>
+  <div class="col-md-3">
+    <select name="status" class="form-select" aria-label="Readiness">
       <option value="">Any readiness</option>
       {% for level in levels %}
         <option value="{{ level }}" {% if level == readiness %}selected{% endif %}>{{ level }}</option>
       {% endfor %}
     </select>
   </div>
-  <div class="col-sm-3">
+  <div class="col-md-2">
     <button type="submit" class="btn btn-primary">Search</button>
     <a href="{% url 'guard_list' %}" class="btn btn-link">Clear</a>
   </div>
@@ -42,10 +49,15 @@
     </thead>
     <tbody>
       {% for guard in guards %}
-        {% with status=guard.readiness earliest=guard.earliest_expiry assignment=guard.current_assignment %}
+        {% with status=guard.readiness earliest=guard.earliest_expiry assignment=guard.current_assignment employment=guard.employment_status %}
           <tr>
             <td>{{ guard.employee_no }}</td>
-            <td><a href="{% url 'guard_profile' guard.pk %}">{{ guard.full_name }}</a></td>
+            <td>
+              <a href="{% url 'guard_profile' guard.pk %}">{{ guard.full_name }}</a>
+              {% if employment.list_label %}
+                <span class="badge text-bg-{{ employment.name|badge }}">{{ employment.list_label }}</span>
+              {% endif %}
+            </td>
             <td>{{ guard.guard_type }}</td>
             <td>{{ guard.rank }}</td>
             <td>{% if assignment %}{{ assignment.post }}{% else %}<span class="text-muted">Not posted</span>{% endif %}</td>

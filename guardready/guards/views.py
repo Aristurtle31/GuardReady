@@ -1,5 +1,6 @@
 """
-Dashboard, guard list, add and edit guard, documents, and guard profile.
+Dashboard, guard list, add and edit guard, documents, guard profile, and the
+agency's own permits.
 
 Views only check access, call forms, services and model methods, and render
 a template. Saving lives in guards/services.py.
@@ -30,43 +31,67 @@ from .forms import (
     GuardBasicForm,
     GuardGovernmentForm,
     GuardPersonalForm,
+    PermitForm,
+    RenewPermitForm,
+    StatusChangeForm,
     add_form_class,
     renew_form_class,
 )
-from .models import Credential, Guard
+from .models import PERMIT_TYPES, AgencyPermit, AgencyPermitVersion, Credential, Guard
 from .services import (
     all_guards,
+    current_guards,
+    employment_counts,
+    filter_by_employment,
     filter_by_readiness,
     readiness_counts,
     save_guard_edit,
     save_new_document,
     save_new_guard,
+    save_new_permit,
+    save_permit_renewal,
     save_renewal,
+    save_status_change,
     search_guards,
 )
 
 
 @access_required("guards.view_dashboard")
 def dashboard(request):
+    """Counts cover current guards only (Active or On leave). Guards who left are not counted."""
     guards = list(all_guards())
-    counts = readiness_counts(guards)
+    current = current_guards(guards)
+    counts = readiness_counts(current)
     cards = [
         {"label": level, "count": counts[level], "color": c.STATUS_COLORS[level]}
         for level in c.READINESS_LEVELS
     ]
-    return render(request, "guards/dashboard.html", {"total": len(guards), "cards": cards})
+    context = {
+        "total": len(current),
+        "cards": cards,
+        "on_leave": employment_counts(current)[c.ON_LEAVE],
+        "left": len(guards) - len(current),
+        "show_left": c.SHOW_LEFT,
+        # The agency's own License to Operate: valid until a date, or a warning.
+        "lto": AgencyPermit.overview(c.LTO),
+    }
+    return render(request, "guards/dashboard.html", context)
 
 
 @access_required("guards.view_all_guards")
 def guard_list(request):
+    """Current guards by default. The "show" filter lists the guards who left instead."""
     query = request.GET.get("q", "").strip()
     readiness = request.GET.get("status", "")
-    guards = filter_by_readiness(search_guards(query), readiness)
+    show = request.GET.get("show", c.SHOW_CURRENT)
+    guards = filter_by_readiness(filter_by_employment(search_guards(query), show), readiness)
     context = {
         "guards": guards,
         "query": query,
         "readiness": readiness,
         "levels": c.READINESS_LEVELS,
+        "show": show,
+        "show_options": c.EMPLOYMENT_FILTERS,
     }
     return render(request, "guards/guard_list.html", context)
 
@@ -201,6 +226,45 @@ def log_refused_edit(request, guard, forms):
 
 
 # ---------------------------------------------------------------------------
+# Employment status
+# ---------------------------------------------------------------------------
+
+
+@access_required("guards.change_guard")
+def change_status(request, pk):
+    """
+    Change a guard's employment status. Same permission as Edit Guard. The
+    form lists only the statuses his current status allows.
+    """
+    guard = editable_guard(request, pk)
+    mark_target(request, "Guard", guard.pk)
+
+    form = StatusChangeForm(guard, request.POST or None)
+    if request.method == "POST":
+        if form.is_valid():
+            new, effects = save_status_change(request, guard, form)
+            extra = "".join(f" {effect}." for effect in effects)
+            messages.success(request, f"{guard.full_name} is now {new}.{extra}")
+            return redirect("guard_profile", pk=guard.pk)
+        log_event(
+            request,
+            AuditEntry.UPDATE,
+            "Guard",
+            guard.pk,
+            outcome=AuditEntry.DENIED,
+            details=f"Status change refused, nothing was saved. {form.problems()}",
+        )
+
+    context = {
+        "guard": guard,
+        "current": guard.employment_status(),
+        "history": guard.status_history(),
+        "form": form,
+    }
+    return render(request, "guards/status_form.html", context)
+
+
+# ---------------------------------------------------------------------------
 # Documents: Add, and Renew or correct
 # ---------------------------------------------------------------------------
 
@@ -300,6 +364,94 @@ def renew_document(request, pk, doc):
 
 
 # ---------------------------------------------------------------------------
+# Agency permits: the agency's own papers, like its License to Operate
+# ---------------------------------------------------------------------------
+
+
+def kind_from_slug(slug):
+    """The permit kind from the URL, like "lto". An unknown permit is a 404."""
+    kind = c.PERMIT_SLUGS.get(slug)
+    if kind is None:
+        raise Http404("There is no agency permit with that name.")
+    return kind
+
+
+@access_required("guards.manage_credentials")
+def agency_permits(request):
+    """One row per kind of permit, with Add or Renew or correct, and the change history."""
+    mark_target(request, "AgencyPermit", "all")
+    context = {
+        "permits": [AgencyPermit.overview(kind) for kind in PERMIT_TYPES],
+        "versions": AgencyPermitVersion.objects.select_related("permit", "changed_by"),
+    }
+    return render(request, "guards/agency_permits.html", context)
+
+
+@access_required("guards.manage_credentials")
+def add_permit(request, kind):
+    """Put a missing permit on file. HR types every value from the permit, even the expiry date."""
+    permit_kind = kind_from_slug(kind)
+    sample = AgencyPermit.for_kind(permit_kind)
+    if AgencyPermit.on_file(permit_kind) is not None:
+        messages.info(request, f"{sample.name()} is already on file. Renew or correct it instead.")
+        return redirect("renew_permit", kind=kind)
+    mark_target(request, "AgencyPermit", permit_kind)
+
+    form = PermitForm(request.POST or None, permit=sample)
+    if request.method == "POST":
+        if form.is_valid():
+            permit = save_new_permit(request, permit_kind, form)
+            messages.success(
+                request, f"{permit.name()} is now on file. It is {permit.expiry_text()}."
+            )
+            return redirect("agency_permits")
+        log_event(
+            request,
+            AuditEntry.CREATE,
+            "AgencyPermit",
+            permit_kind,
+            outcome=AuditEntry.DENIED,
+            details=f"Refused, nothing was saved. {form.problems()}",
+        )
+    return render(request, "guards/permit_add.html", {"form": form})
+
+
+@access_required("guards.manage_credentials")
+def renew_permit(request, kind):
+    """
+    Renew or correct a permit on file. It always goes through renew(), so the
+    old values are saved in the history first. There is no delete.
+    """
+    permit_kind = kind_from_slug(kind)
+    permit = AgencyPermit.on_file(permit_kind)
+    if permit is None:
+        name = AgencyPermit.for_kind(permit_kind).name()
+        messages.info(request, f"{name} is not on file yet. Add it first.")
+        return redirect("add_permit", kind=kind)
+    mark_target(request, "AgencyPermit", permit.pk)
+
+    form = RenewPermitForm(request.POST or None, permit=permit)
+    if request.method == "POST":
+        if form.is_valid():
+            save_permit_renewal(request, permit, form)
+            messages.success(
+                request,
+                f"{permit.name()} was saved. It is {permit.expiry_text()}. "
+                "The old values are kept in the history.",
+            )
+            return redirect("agency_permits")
+        log_event(
+            request,
+            AuditEntry.UPDATE,
+            "AgencyPermit",
+            permit.pk,
+            outcome=AuditEntry.DENIED,
+            details=f"Refused, nothing was saved. {form.problems()}",
+        )
+    return render(request, "guards/permit_renew.html", {"form": form, "permit": permit})
+
+
+# ---------------------------------------------------------------------------
 # My record and the guard profile
 # ---------------------------------------------------------------------------
 
@@ -315,7 +467,9 @@ def my_record(request):
 
 @access_required("guards.view_all_guards", "guards.view_own_record")
 def guard_profile(request, pk):
-    guard = get_object_or_404(Guard.objects.prefetch_related("credentials"), pk=pk)
+    guard = get_object_or_404(
+        Guard.objects.prefetch_related("credentials", "status_changes__recorded_by"), pk=pk
+    )
     # Zero Trust: checked on the object itself, not just hidden from the menu.
     if not can_view_guard(request.user, guard):
         deny(request, "A guard can only open his own records.", "Guard", guard.pk)
@@ -326,6 +480,8 @@ def guard_profile(request, pk):
     left = seconds_left(request, guard) if unlocked else 0
     context = {
         "guard": guard,
+        "employment": guard.employment_status(),
+        "status_history": guard.status_history(),
         "readiness": guard.readiness(),
         "block_reasons": guard.block_reasons(),
         "earliest": guard.earliest_expiry(),

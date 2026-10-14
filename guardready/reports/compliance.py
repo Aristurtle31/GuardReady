@@ -28,18 +28,25 @@ from django.utils import timezone
 
 from audit.models import AuditEntry
 from deployment.models import Assignment
-from guards.constants import CLEARED, LESP_LICENSE, NOT_CLEARED, NOT_ON_FILE, REQUIRED_DOCUMENTS
+from guards.constants import (
+    CLEARED,
+    LESP_LICENSE,
+    LTO,
+    NOT_CLEARED,
+    NOT_ON_FILE,
+    REQUIRED_DOCUMENTS,
+)
 from guards.dates import long_date, long_datetime
-from guards.models import CredentialVersion
-from guards.services import all_guards
+from guards.models import AgencyPermit, CredentialVersion
+from guards.services import all_guards, current_guards
 
 from .constants import (
     ABSENT,
     AGENCY_ADDRESS,
-    AGENCY_LTO_NUMBER,
     AGENCY_NAME,
     CONFIDENTIALITY_NOTE,
     LATE,
+    LTO_NOT_ON_FILE,
     NAME_NOT_ON_FILE,
     NO,
     NONE_LISTED,
@@ -153,14 +160,17 @@ class GuardRosterSection(ReportSection):
 
     KEY = "roster"
     TITLE = "Guard roster"
-    NOTE = "Readiness is as of the date this report was generated."
+    NOTE = (
+        "Guards employed on the date this report was generated, with their readiness "
+        "on that date."
+    )
 
     def columns(self):
         return ["Name", "Employee no.", "Guard type", "LESP number", "LESP expiry", "Readiness"]
 
     def _collect(self):
         rows = []
-        for guard in all_guards():
+        for guard in current_guards():
             number, expiry = self._lesp_cells(guard)
             rows.append(
                 self._guard_row(
@@ -188,7 +198,7 @@ class RequiredDocumentsSection(ReportSection):
 
     def _collect(self):
         rows = []
-        for guard in all_guards():
+        for guard in current_guards():
             for doc_type in REQUIRED_DOCUMENTS:
                 status, expiry = self._document_cells(guard.get_credential(doc_type))
                 rows.append(
@@ -205,7 +215,7 @@ class RequiredDocumentsSection(ReportSection):
 
 
 class DeploymentHistorySection(ReportSection):
-    """Every posting at every site that overlaps the report period."""
+    """Every posting at every site that overlaps the report period, even of guards who left."""
 
     KEY = "deployments"
     TITLE = "Deployment history in the period"
@@ -241,7 +251,7 @@ class BlockedGuardsSection(ReportSection):
 
     def _collect(self):
         rows = []
-        for guard in all_guards():
+        for guard in current_guards():
             if guard.is_deployable():
                 continue
             missing = ", ".join(guard.missing()) or NONE_LISTED
@@ -448,7 +458,10 @@ class SiteGuardsSection(ClientSection):
 
     KEY = "site_guards"
     TITLE = "Guards posted at this site"
-    NOTE = "Readiness is as of the date this report was generated. The reason is never shown."
+    NOTE = (
+        "Guards still employed on the date this report was generated, with their readiness on "
+        "that date. The reason is never shown."
+    )
     # A deployable guard (Cleared or Expiring soon) shows as Cleared.
     READINESS_LABELS = {True: CLEARED, False: NOT_CLEARED}
 
@@ -458,7 +471,7 @@ class SiteGuardsSection(ClientSection):
     def _collect(self):
         guard_ids = set(self._site_postings().values_list("guard_id", flat=True))
         rows = []
-        for guard in all_guards().filter(pk__in=guard_ids):
+        for guard in current_guards(all_guards().filter(pk__in=guard_ids)):
             number, expiry = self._lesp_cells(guard)
             rows.append(
                 self._guard_row(
@@ -568,6 +581,8 @@ class ComplianceReport(ABC):
         self._period_end = details["period_end"]
         self._section_keys = self._allowed_keys(section_keys)
         self._prepared_by = prepared_by
+        # Read once, when the report is made. Never a made-up number.
+        self._lto_number = self.lto_number_now()
         self._sections = []
         self._entry_id = None
         self._generated_at = None
@@ -603,6 +618,26 @@ class ComplianceReport(ABC):
         ]
 
     # --- The request pages ---
+
+    @staticmethod
+    def lto_number_now():
+        """The number of the License to Operate on file, or LTO_NOT_ON_FILE if none is valid."""
+        lto = AgencyPermit.usable(LTO)
+        return lto.number if lto else LTO_NOT_ON_FILE
+
+    @staticmethod
+    def lto_warning():
+        """
+        The warning for the request form when the header would print
+        LTO_NOT_ON_FILE, or "" when a License to Operate is on file and not expired.
+        """
+        if AgencyPermit.usable(LTO) is not None:
+            return ""
+        lto = AgencyPermit.overview(LTO)
+        return (
+            f"{lto['name']}: {lto['text']}. The report header will print "
+            f'"{LTO_NOT_ON_FILE}" instead of a license number.'
+        )
 
     @classmethod
     def section_choices(cls):
@@ -691,7 +726,8 @@ class ComplianceReport(ABC):
 
     @property
     def agency_lto_number(self):
-        return AGENCY_LTO_NUMBER
+        """The License to Operate number, or LTO_NOT_ON_FILE. Read when the report was made."""
+        return self._lto_number
 
     @property
     def confidentiality_note(self):

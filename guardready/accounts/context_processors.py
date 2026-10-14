@@ -11,6 +11,7 @@ from .roles import role_name
 MENU_ITEMS = [
     ("Dashboard", "dashboard", ["guards.view_dashboard"]),
     ("Guards", "guard_list", ["guards.view_all_guards"]),
+    ("Agency permits", "agency_permits", ["guards.manage_credentials"]),
     ("My record", "my_record", ["guards.view_own_record"]),
     ("Audit log", "audit_log", ["audit.view_audit_log"]),
 ]
