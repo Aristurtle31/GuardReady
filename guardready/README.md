@@ -1,7 +1,6 @@
 # GuardReady
 
 **Guard Credential and Deployment Readiness System.** Know which guards can be posted, and why.
-
 **Jump to:** [Quick start](#quick-start) | [Codespaces](#run-in-github-codespaces) | [Run locally](#run-locally) | [Demo accounts](#demo-accounts) | [Quick tour](#quick-tour)
 
 ## About
