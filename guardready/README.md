@@ -34,30 +34,6 @@ Everything below is built and working.
 - **Append-only audit log:** audit entries, old versions of papers, status changes, attendance and evaluations can be added but never edited or deleted.
 - **Masked personal data:** the contact number shows only its last 4 digits. Medical results, birth date, home address and government numbers stay hidden until a step-up, and they never appear in notices, history, reports or CSV files.
 
-## Screenshots
-
-Screenshots are not in the repo yet.
-
-<!--
-Screenshots to add. Save them in docs/screenshots/ with these names, then put
-the image lines below in place of this comment. The steps for each one are in
-docs/presentation/screenshots.md on the team's computer (not in git).
-
-1. docs/screenshots/gui_1_dashboard.png (admin): Dashboard with the counts, the urgent banner and the LTO line
-2. docs/screenshots/gui_2_profile_locked.png (admin): Rowena Villanueva's profile, Not cleared, sensitive records locked
-3. docs/screenshots/gui_3_step_up.png (admin): the step-up form with the password and a reason
-4. docs/screenshots/gui_4_access_refused.png (guard1): Access refused on /audit/
-5. docs/screenshots/gui_5_audit_log_deny.png (admin): the Audit log filtered to DENY
-6. docs/screenshots/gui_6_notifications.png (admin): the Notifications page
-
-![Dashboard](docs/screenshots/gui_1_dashboard.png)
-![Guard profile with sensitive records locked](docs/screenshots/gui_2_profile_locked.png)
-![Step-up form](docs/screenshots/gui_3_step_up.png)
-![Access refused for a guard](docs/screenshots/gui_4_access_refused.png)
-![Audit log filtered to DENY](docs/screenshots/gui_5_audit_log_deny.png)
-![Notifications](docs/screenshots/gui_6_notifications.png)
--->
-
 ## Tech stack
 
 - **Python 3.12** (tested with 3.12.14). Django 6.1 works with Python 3.12, 3.13 and 3.14 ([Django FAQ](https://docs.djangoproject.com/en/6.1/faq/install/)).
