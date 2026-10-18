@@ -345,15 +345,9 @@ These are not built yet:
 
 ## Team
 
-Henrich Lumanas and [Groupmate name]
+Henrich Lumanas and Art Rian Cartin
 
 IT102, Mapúa Malayan Colleges Mindanao
-
-Professor: [Professor name]
-
-## License
-
-[License: not chosen yet]
 
 ## Disclaimer
 
