@@ -1,0 +1,92 @@
+{% extends "base.html" %}
+{% load guard_tags %}
+{% block title %}Assign a guard{% endblock %}
+{% block content %}
+<h1 class="h3 mb-1">Assign a guard</h1>
+<p class="text-muted mb-3">
+  {{ post.site.name }}, {{ post.name }} ({{ post.get_shift_display }}).
+  {{ post.filled_count }} of {{ post.headcount }} posted.
+  The posting starts today, {{ today|date:"F j, Y" }}.
+</p>
+
+<div class="alert alert-info small">
+  GuardReady checks the guard's employment status and documents, whether the
+  guard is already posted, and whether this post is full. A refused attempt is
+  recorded in the audit log. There is no override.
+</div>
+
+{% if reasons %}
+  <div class="alert alert-danger">
+    <p class="fw-semibold mb-1">Refused. {{ chosen.full_name }} cannot be posted here:</p>
+    <ul class="mb-1">
+      {% for reason in reasons %}<li>{{ reason }}</li>{% endfor %}
+    </ul>
+    <p class="small mb-0">This attempt was recorded in the audit log.</p>
+  </div>
+{% endif %}
+{% if form.errors %}
+  <div class="alert alert-danger">{{ form.problems }}</div>
+{% endif %}
+
+<form method="get" class="row g-2 align-items-end mb-3">
+  <div class="col-sm-4">
+    <label class="form-label small" for="show">Which guards</label>
+    <select name="show" id="show" class="form-select form-select-sm">
+      {% for value, label in show_options.items %}
+        <option value="{{ value }}" {% if value == show %}selected{% endif %}>{{ label }}</option>
+      {% endfor %}
+    </select>
+  </div>
+  <div class="col-sm-4">
+    <button type="submit" class="btn btn-outline-primary btn-sm">Show</button>
+  </div>
+</form>
+
+<form method="post">
+  {% csrf_token %}
+  <input type="hidden" name="show" value="{{ show }}">
+  <div class="table-responsive">
+    <table class="table table-sm bg-white align-middle">
+      <thead>
+        <tr>
+          <th>Pick</th><th>Name</th><th>Employee no.</th><th>Readiness</th>
+          <th>Current post</th><th>Can be posted here?</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for row in rows %}
+          {% with guard=row.guard readiness=row.guard.readiness employment=row.guard.employment_status %}
+            <tr>
+              <td>
+                <input class="form-check-input" type="radio" name="guard" value="{{ guard.pk }}"
+                       id="guard-{{ guard.pk }}" {% if chosen and chosen.pk == guard.pk %}checked{% endif %}>
+              </td>
+              <td>
+                <label for="guard-{{ guard.pk }}">{{ guard.full_name }}</label>
+                {% if employment.list_label %}
+                  <span class="badge text-bg-{{ employment.name|badge }}">{{ employment.list_label }}</span>
+                {% endif %}
+              </td>
+              <td>{{ guard.employee_no }}</td>
+              <td><span class="badge text-bg-{{ readiness|badge }}">{{ readiness }}</span></td>
+              <td>{% if row.posting %}{{ row.posting.post }}{% else %}<span class="text-muted">Not posted</span>{% endif %}</td>
+              <td>
+                {% if row.reasons %}
+                  <span class="badge text-bg-danger">No</span>
+                  <span class="small">{{ row.reasons|join:"; " }}</span>
+                {% else %}
+                  <span class="badge text-bg-success">Yes</span>
+                {% endif %}
+              </td>
+            </tr>
+          {% endwith %}
+        {% empty %}
+          <tr><td colspan="6" class="text-muted">No guards to list.</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  <button type="submit" class="btn btn-primary">Assign the guard I picked</button>
+  <a class="btn btn-link" href="{% url 'post_detail' post.pk %}">Cancel</a>
+</form>
+{% endblock %}

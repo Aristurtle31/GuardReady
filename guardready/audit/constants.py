@@ -1,5 +1,5 @@
 """
-Security alert settings. Every number here is a PLACEHOLDER. Change them only here.
+Audit settings. The security alert numbers are PLACEHOLDERS. Change them only here.
 
 Every window and the office hours use Philippine time (Asia/Manila), even though
 Django stores timestamps in UTC.
@@ -47,3 +47,12 @@ OFFICE_DAYS = [
 # Staff are the roles in ROLE_PERMISSIONS that have this permission (Admin/HR).
 # Guards do not have it, so their night shifts never count as after hours.
 STAFF_PERMISSION = "guards.view_all_guards"
+
+# ---------------------------------------------------------------------------
+# Work the system does by itself (Stage 2: python manage.py check_expiry)
+# ---------------------------------------------------------------------------
+
+# The audit entry of a system job has no user. It shows these instead. The
+# role is only a label in the log. It is not a login role and has no permissions.
+SYSTEM_USERNAME = "system"
+SYSTEM_ROLE = "System"

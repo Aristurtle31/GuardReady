@@ -6,6 +6,7 @@ from django.conf import settings
 
 from accounts.roles import role_name
 
+from .constants import SYSTEM_ROLE, SYSTEM_USERNAME
 from .models import AuditEntry
 
 
@@ -62,6 +63,22 @@ def log_event(
         target_id=str(target_id),
         outcome=outcome,
         sensitive=sensitive,
+        details=details,
+    )
+
+
+def log_system_event(action, target_type="", target_id="", details=""):
+    """
+    Write one audit entry for work the system did by itself, like the daily
+    expiry check. There is no request, so there is no user, session or IP.
+    """
+    return AuditEntry.objects.create(
+        user=None,
+        username=SYSTEM_USERNAME,
+        role=SYSTEM_ROLE,
+        action=action,
+        target_type=target_type,
+        target_id=str(target_id),
         details=details,
     )
 

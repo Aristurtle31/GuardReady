@@ -1,5 +1,6 @@
 """
-Tests for the audit app: the Security alerts page (Part 2, Oct 13, 2026).
+Tests for the audit app: the Security alerts page (Part 2, Oct 13, 2026) and
+the guard history classes in audit/history.py (Stage 3).
 
 The rule tests build unsaved AuditEntry objects with chosen times, because a
 saved entry always gets the current time (auto_now_add). The page tests use
@@ -20,7 +21,10 @@ from django.urls import reverse
 from django.utils import timezone
 
 from accounts.roles import ADMIN, GUARD
-from guards.models import Guard
+from deployment.models import Post
+from guards import constants as gc
+from guards.dates import long_date
+from guards.models import CredentialVersion, Guard
 
 from . import constants as c
 from .alerts import (
@@ -32,6 +36,15 @@ from .alerts import (
     RepeatedDenialRule,
     philippine_time,
     staff_roles,
+)
+from .history import (
+    HISTORY_EVENTS,
+    AssignmentEvent,
+    CredentialEvent,
+    HistoryEvent,
+    NoticeEvent,
+    RefusedAssignmentEvent,
+    history_for,
 )
 from .models import AuditEntry
 
@@ -459,3 +472,136 @@ class SecurityAlertsPageTests(TestCase):
         response = self.client.get(reverse("audit_log"))
         self.assertContains(response, f'href="{reverse("security_alerts")}"')
         self.assertContains(response, "Security alerts")
+
+
+# ---------------------------------------------------------------------------
+# Stage 3: the guard history classes (audit/history.py)
+# ---------------------------------------------------------------------------
+
+
+class HistoryEventTests(TestCase):
+    """Each HistoryEvent wraps one record, and history_for() puts them in order."""
+
+    @classmethod
+    def setUpTestData(cls):
+        seed()
+        cls.admin = User.objects.get(username="admin")
+
+    def setUp(self):
+        self.client.login(username="admin", password="admin123")
+
+    def guard(self, employee_no):
+        return Guard.objects.get(employee_no=employee_no)
+
+    def assign(self, post_name, guard):
+        """Pick a guard on the assign page, like HR does."""
+        post = Post.objects.get(name=post_name)
+        url = reverse("assign_to_post", args=[post.pk])
+        return self.client.post(url, {"guard": guard.pk, "show": gc.SHOW_CURRENT})
+
+    def events_of(self, guard, event_class):
+        return [event for event in history_for(guard) if isinstance(event, event_class)]
+
+    def test_the_base_class_cannot_be_used_on_its_own(self):
+        with self.assertRaises(TypeError):
+            HistoryEvent(None)
+        self.assertEqual(
+            HISTORY_EVENTS, [AssignmentEvent, RefusedAssignmentEvent, CredentialEvent, NoticeEvent]
+        )
+        for event_class in HISTORY_EVENTS:
+            with self.subTest(event=event_class.__name__):
+                self.assertTrue(issubclass(event_class, HistoryEvent))
+                self.assertTrue(event_class.LABEL)
+
+    def test_an_event_keeps_its_record_read_only(self):
+        posting = self.guard("GR-0001").current_assignment()
+        event = AssignmentEvent(posting)
+        self.assertIs(event.record, posting)
+        with self.assertRaises(AttributeError):
+            event.record = None
+        self.assertEqual(str(event), f"Posting: {event.describe()}")
+
+    def test_juans_history_has_his_postings_and_his_nbi_renewal_newest_first(self):
+        juan = self.guard("GR-0001")
+        events = history_for(juan)
+        kinds = [type(event) for event in events]
+        self.assertEqual(kinds, [AssignmentEvent, AssignmentEvent, CredentialEvent])
+        times = [event.when() for event in events]
+        self.assertEqual(times, sorted(times, reverse=True))
+        self.assertIn("Mall Entrance A", events[0].describe())
+        self.assertIn("Still posted", events[0].describe())
+        self.assertIn("Main Lobby", events[1].describe())
+
+        version = CredentialVersion.objects.get(credential__guard=juan)
+        nbi = juan.get_credential(gc.NBI_CLEARANCE)
+        expected = f'Expiry date from "{long_date(version.old_expires)}" to "{long_date(nbi.expires)}"'
+        self.assertIn(expected, events[2].describe())
+        self.assertEqual(events[2].row()["by"], "Liza Ramos")
+
+    def test_a_document_change_never_shows_the_medical_result(self):
+        joel = self.guard("GR-0003")  # his drug test was renewed in the seed
+        version = CredentialVersion.objects.get(credential__guard=joel)
+        self.assertTrue(version.old_result)
+        [event] = self.events_of(joel, CredentialEvent)
+        self.assertIn("Drug Test renewed or corrected", event.describe())
+        self.assertNotIn(version.old_result, str(event.row()))
+        self.assertNotIn(joel.get_credential(gc.DRUG_TEST).result, str(event.row()))
+
+    def test_each_change_shows_the_values_that_replaced_it(self):
+        mario = self.guard("GR-0002")
+        lesp = mario.get_credential(gc.LESP_LICENSE)
+        expires = lesp.expires
+        lesp.renew("LESP-A", lesp.issued, expires + timedelta(days=10), self.admin)
+        lesp.renew("LESP-B", lesp.issued, expires + timedelta(days=20), self.admin)
+        older, newer = sorted(self.events_of(mario, CredentialEvent), key=lambda event: event.record.pk)
+        self.assertIn('to "LESP-A"', older.describe())
+        self.assertIn(f'to "{long_date(expires + timedelta(days=10))}"', older.describe())
+        self.assertIn('Number from "LESP-A" to "LESP-B"', newer.describe())
+
+    def test_a_correction_that_keeps_the_number_and_dates_says_so(self):
+        mario = self.guard("GR-0002")
+        lesp = mario.get_credential(gc.LESP_LICENSE)
+        lesp.renew(lesp.number, lesp.issued, lesp.expires, self.admin)
+        [event] = self.events_of(mario, CredentialEvent)
+        self.assertIn("the number and dates stayed the same", event.describe())
+
+    def test_notices_show_their_status_and_urgent_ones_are_red(self):
+        danilo_rows = [event.row() for event in self.events_of(self.guard("GR-0007"), NoticeEvent)]
+        self.assertEqual(len(danilo_rows), 2)  # police clearance (1 week) and neuro exam (expired)
+        for row in danilo_rows:
+            with self.subTest(details=row["details"]):
+                self.assertEqual(row["color"], "danger")
+                self.assertIn("Notice status: New.", row["details"])
+                self.assertEqual(row["by"], c.SYSTEM_ROLE)
+        [elmer] = self.events_of(self.guard("GR-0005"), NoticeEvent)  # 1 month is not urgent
+        self.assertEqual(elmer.row()["color"], NoticeEvent.COLOR)
+
+    def test_a_refused_posting_shows_in_his_history_but_a_success_does_not(self):
+        rowena, ricardo = self.guard("GR-0006"), self.guard("GR-0004")
+        self.assign("Mall Entrance A", rowena)
+        self.assign("Basement Parking", ricardo)
+
+        newest = history_for(rowena)[0]
+        self.assertIsInstance(newest, RefusedAssignmentEvent)
+        row = newest.row()
+        self.assertIn("Mall Entrance A", row["details"])
+        self.assertIn("NBI Clearance expired on", row["details"])
+        self.assertEqual((row["by"], row["color"]), ("Liza Ramos", "danger"))
+
+        self.assertEqual(self.events_of(ricardo, RefusedAssignmentEvent), [])
+        posted = history_for(ricardo)[0]
+        self.assertIsInstance(posted, AssignmentEvent)
+        self.assertIn("Basement Parking", posted.describe())
+        self.assertIn("Still posted (0 days so far)", posted.describe())
+
+    def test_a_posting_made_today_sorts_after_a_refusal_earlier_today(self):
+        juan = self.guard("GR-0001")
+        self.assign("Basement Parking", juan)  # refused: he is already posted
+        self.client.post(reverse("end_posting", args=[juan.current_assignment().pk]))
+        self.assign("Basement Parking", juan)  # now it works
+        events = history_for(juan)
+        self.assertEqual(
+            [type(event) for event in events[:2]], [AssignmentEvent, RefusedAssignmentEvent]
+        )
+        self.assertIn("Basement Parking", events[0].describe())
+        self.assertIn("to " + long_date(timezone.localdate()), events[2].describe())

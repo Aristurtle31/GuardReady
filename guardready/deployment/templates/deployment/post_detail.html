@@ -1,0 +1,85 @@
+{% extends "base.html" %}
+{% load guard_tags %}
+{% block title %}{{ post.site.name }}, {{ post.name }}{% endblock %}
+{% block content %}
+<div class="d-flex flex-wrap align-items-center gap-2 mb-1">
+  <h1 class="h3 mb-0">{{ post.site.name }}, {{ post.name }}</h1>
+  {% if post.is_full %}
+    <span class="badge text-bg-success fs-6">Full</span>
+  {% else %}
+    <span class="badge text-bg-warning fs-6">{{ post.open_slots }} open slot{{ post.open_slots|pluralize }}</span>
+  {% endif %}
+</div>
+<p class="text-muted mb-3">
+  {{ post.get_shift_display }}, starts at {{ post.scheduled_start|time:"g:i A" }}.
+  {{ post.filled_count }} of {{ post.headcount }} guard{{ post.headcount|pluralize }} posted.
+  {{ post.site.address }}
+</p>
+
+<div class="d-flex flex-wrap gap-2 mb-3">
+  <a class="btn btn-primary btn-sm" href="{% url 'assign_to_post' post.pk %}">Assign a guard</a>
+  <a class="btn btn-link btn-sm" href="{% url 'site_list' %}">Back to sites</a>
+</div>
+
+<div class="card mb-3">
+  <div class="card-header">Posted now</div>
+  <div class="table-responsive">
+    <table class="table table-sm mb-0 align-middle">
+      <thead>
+        <tr><th>Guard</th><th>Employee no.</th><th>Readiness</th><th>Since</th><th>Days</th><th>Assigned by</th><th></th></tr>
+      </thead>
+      <tbody>
+        {% for posting in current %}
+          {% with readiness=posting.guard.readiness %}
+            <tr>
+              <td><a href="{% url 'guard_profile' posting.guard.pk %}">{{ posting.guard.full_name }}</a></td>
+              <td>{{ posting.guard.employee_no }}</td>
+              <td><span class="badge text-bg-{{ readiness|badge }}">{{ readiness }}</span></td>
+              <td class="text-nowrap">{{ posting.start_date|date:"F j, Y" }}</td>
+              <td>{{ posting.days_served }}</td>
+              <td>{{ posting.assigned_by.get_full_name|default:posting.assigned_by.username }}</td>
+              <td class="text-end">
+                <form method="post" action="{% url 'end_posting' posting.pk %}">
+                  {% csrf_token %}
+                  <button type="submit" class="btn btn-outline-danger btn-sm">End posting today</button>
+                </form>
+              </td>
+            </tr>
+          {% endwith %}
+        {% empty %}
+          <tr><td colspan="7" class="text-muted">Nobody is posted here right now.</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  <div class="card-body small text-muted">
+    Ending a posting sets its end date to today. It cannot be undone or deleted,
+    and it stays in the guard's history. To move a guard, end the current
+    posting here first, then assign the guard to the new post.
+  </div>
+</div>
+
+<div class="card mb-3">
+  <div class="card-header">Past postings</div>
+  <div class="table-responsive">
+    <table class="table table-sm mb-0">
+      <thead>
+        <tr><th>Guard</th><th>From</th><th>To</th><th>Days</th><th>Assigned by</th></tr>
+      </thead>
+      <tbody>
+        {% for posting in past %}
+          <tr>
+            <td><a href="{% url 'guard_profile' posting.guard.pk %}">{{ posting.guard.full_name }}</a></td>
+            <td class="text-nowrap">{{ posting.start_date|date:"F j, Y" }}</td>
+            <td class="text-nowrap">{{ posting.end_date|date:"F j, Y" }}</td>
+            <td>{{ posting.days_served }}</td>
+            <td>{{ posting.assigned_by.get_full_name|default:posting.assigned_by.username }}</td>
+          </tr>
+        {% empty %}
+          <tr><td colspan="5" class="text-muted">No past postings at this post.</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+{% endblock %}

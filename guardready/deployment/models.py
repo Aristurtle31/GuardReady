@@ -4,6 +4,10 @@ Deployment app models: client sites, posts, and assignments.
 COMPOSITION: a ClientSite owns its Posts.
 AGGREGATION: a Post holds Guards through Assignments. The guards exist on
 their own and move between posts.
+
+Post.refusal_reasons() holds the rules for posting a guard (Stage 3). Each
+object answers for itself: the guard's employment status, his documents, his
+open posting, and the post's free slots.
 """
 
 from django.conf import settings
@@ -61,11 +65,38 @@ class Post(models.Model):
     def active_assignments(self):
         return self.assignments.filter(end_date__isnull=True)
 
+    def past_assignments(self):
+        """Postings here that have ended, newest first."""
+        return self.assignments.filter(end_date__isnull=False)
+
     def filled_count(self):
         return self.active_assignments().count()
 
     def is_full(self):
         return self.filled_count() >= self.headcount
+
+    def open_slots(self):
+        """How many more guards this post needs right now."""
+        return max(self.headcount - self.filled_count(), 0)
+
+    def refusal_reasons(self, guard):
+        """
+        Every reason this guard cannot be posted here today. Empty means he can.
+        Each object answers for itself: his employment status, his documents,
+        his open posting, and this post's free slots. assign_guard() asks this
+        first and logs a refusal with these reasons. There is no override.
+        """
+        reasons = []
+        status = guard.employment_status()
+        if not status.can_be_assigned():
+            reasons.append(status.refusal_reason())
+        reasons += guard.block_reasons()
+        posting = guard.current_assignment()
+        if posting is not None:
+            reasons.append(f"Already posted at {posting.post}")
+        if self.is_full():
+            reasons.append(f"This post is full ({self.filled_count()} of {self.headcount} posted)")
+        return reasons
 
 
 class Assignment(models.Model):
@@ -95,9 +126,9 @@ class Assignment(models.Model):
     def start(cls, guard, post, by_user, start_date=None):
         """
         Open a new assignment. Only assign_guard() and seed_demo call this.
-        assign_guard() does the readiness check first. A guard whose employment
-        status cannot be assigned (On leave, Resigned, Let go) is always refused
-        here, with the reason "On leave" or "No longer employed".
+        assign_guard() asks Post.refusal_reasons() first. A guard whose
+        employment status cannot be assigned (On leave, Resigned, Let go) is
+        always refused here too, with the reason "On leave" or "No longer employed".
         """
         status = guard.employment_status()
         if not status.can_be_assigned():

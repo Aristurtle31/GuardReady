@@ -15,7 +15,7 @@
         <ul class="navbar-nav me-auto flex-wrap">
           {% for item in menu %}
             <li class="nav-item">
-              <a class="nav-link{% if item.active %} active{% endif %}" href="{{ item.url }}">{{ item.label }}</a>
+              <a class="nav-link{% if item.active %} active{% endif %}" href="{{ item.url }}">{{ item.label }}{% if item.count %} <span class="badge rounded-pill text-bg-danger">{{ item.count }} new</span>{% endif %}</a>
             </li>
           {% endfor %}
         </ul>

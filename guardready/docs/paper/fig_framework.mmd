@@ -1,0 +1,16 @@
+---
+config:
+  flowchart:
+    wrappingWidth: 460
+    htmlLabels: true
+---
+%% GuardReady: conceptual framework for the IEEE paper (Fig. 2).
+%% Input, Process, Output with a feedback loop. Same text as slide 7 of the deck.
+%% Stacked top to bottom so it fits one column of the paper.
+%% Paste into https://mermaid.live and export a PNG.
+flowchart TB
+    IN["<b>INPUT</b><br/>Guard records and 6 papers each<br/>Agency License to Operate (LTO)<br/>Attendance and evaluations<br/>Logins and actions by role"]
+    PR["<b>PROCESS: Python OOP classes in Django</b><br/>ExpiringDocument: days left, status, notice band<br/>Guard and Post: readiness() and refusal_reasons()<br/>Report classes: punctuality and evaluations<br/>Zero trust: permission checks, step-up, audit log"]
+    OUT["<b>OUTPUT</b><br/>Dashboard counts and urgent banner<br/>Expiry notices: 60, 30, 14, 7, 1 days, Expired<br/>Refused postings, guard reports and CSV files<br/>Audit log, security alerts, compliance reports"]
+    IN --> PR --> OUT
+    OUT -. "Renew or correct: renewed papers go back in as input" .-> IN
