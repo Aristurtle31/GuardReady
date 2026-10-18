@@ -13,7 +13,7 @@
       {% if current.effective_date %}
         since {{ current.effective_date|date:"F j, Y" }} ({{ current.reason }})
       {% else %}
-        since he was hired, {{ guard.date_hired|date:"F j, Y" }}
+        since the hire date, {{ guard.date_hired|date:"F j, Y" }}
       {% endif %}
     </p>
   </div>
@@ -25,10 +25,11 @@
   <div class="card-body">
     {% include "guards/_section.html" %}
     <p class="small text-muted mt-3 mb-0">
-      On leave, Resigned and Let go close his open posting on the effective date.
-      Resigned and Let go also take him out of the lists and counts, and stop his
-      login if he has one. Going back to Active turns his login on again. Every
-      change is kept in his status history and the audit log.
+      On leave, Resigned and Let go close the guard's open posting on the effective
+      date. Resigned and Let go also take the guard out of the lists and counts,
+      and turn off the guard's login, if there is one. Going back to Active turns
+      the login on again. Every change is kept in the status history and the
+      audit log.
     </p>
     <div class="mt-3">
       <button type="submit" class="btn btn-primary">Save status</button>

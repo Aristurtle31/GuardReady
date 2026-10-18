@@ -1,0 +1,95 @@
+{% extends "base.html" %}
+{% load guard_tags %}
+{% block title %}Notifications{% endblock %}
+{% block content %}
+<h1 class="h3 mb-1">Notifications</h1>
+<p class="text-muted small mb-3">
+  Expiry notices for guard documents and the agency's own permits, at 2 months,
+  1 month, 2 weeks, 1 week and 1 day before the expiry date, then when it expires.
+  A notice is resolved when its document is renewed or corrected with a new
+  expiry date. Open notices of guards who left are hidden.
+</p>
+
+<form method="get" class="row g-2 align-items-end mb-3">
+  <div class="col-sm-3">
+    <label class="form-label small" for="status">Status</label>
+    <select name="status" id="status" class="form-select form-select-sm">
+      {% for key, choice in status_filters.items %}
+        <option value="{{ key }}" {% if key == filters.status %}selected{% endif %}>{{ choice.0 }}</option>
+      {% endfor %}
+    </select>
+  </div>
+  <div class="col-sm-3">
+    <label class="form-label small" for="band">Band</label>
+    <select name="band" id="band" class="form-select form-select-sm">
+      <option value="">Every band</option>
+      {% for band, label in bands.items %}
+        <option value="{{ band }}" {% if filters.band == band|stringformat:"d" %}selected{% endif %}>{{ label }}</option>
+      {% endfor %}
+    </select>
+  </div>
+  <div class="col-sm-3">
+    <label class="form-label small" for="about">About</label>
+    <select name="about" id="about" class="form-select form-select-sm">
+      <option value="">Guards and agency</option>
+      {% for kind, label in about_filters.items %}
+        <option value="{{ kind }}" {% if kind == filters.about %}selected{% endif %}>{{ label }}s</option>
+      {% endfor %}
+    </select>
+  </div>
+  <div class="col-sm-3">
+    <button type="submit" class="btn btn-primary btn-sm">Filter</button>
+    <a href="{% url 'notifications' %}" class="btn btn-link btn-sm">Clear</a>
+  </div>
+</form>
+
+<div class="d-flex flex-wrap align-items-center gap-2 mb-2">
+  <p class="small text-muted mb-0">{{ notices|length }} notice{{ notices|length|pluralize }} found.</p>
+  {% if new_count %}
+    <form method="post" action="{% url 'all_notices_seen' %}" class="ms-auto">
+      {% csrf_token %}
+      {% for name, value in filters.items %}<input type="hidden" name="{{ name }}" value="{{ value }}">{% endfor %}
+      <button type="submit" class="btn btn-outline-secondary btn-sm">Mark all {{ new_count }} new as seen</button>
+    </form>
+  {% endif %}
+</div>
+
+<div class="table-responsive">
+  <table class="table table-sm bg-white align-middle">
+    <thead>
+      <tr><th>Made on</th><th>Band</th><th>Notice</th><th>About</th><th>Status</th><th></th></tr>
+    </thead>
+    <tbody>
+      {% for notice in notices %}
+        <tr>
+          <td>{{ notice.created_date|date:"F j, Y" }}</td>
+          <td>
+            <span class="badge {% if notice.is_urgent %}text-bg-danger{% else %}text-bg-secondary{% endif %}">
+              {{ notice.get_band_display }}
+            </span>
+          </td>
+          <td><a href="{{ notice.get_absolute_url }}">{{ notice.message }}</a></td>
+          <td>{{ notice.ABOUT }}</td>
+          <td>{{ notice.status }}</td>
+          <td class="text-end">
+            {% if notice.status == notice.NEW %}
+              <form method="post" action="{% url 'notice_seen' notice.KIND notice.pk %}">
+                {% csrf_token %}
+                {% for name, value in filters.items %}<input type="hidden" name="{{ name }}" value="{{ value }}">{% endfor %}
+                <button type="submit" class="btn btn-outline-primary btn-sm">Mark as seen</button>
+              </form>
+            {% endif %}
+          </td>
+        </tr>
+      {% empty %}
+        <tr><td colspan="6" class="text-muted">No notices match these filters.</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+
+<p class="small text-muted">
+  New notices are made once a day by <code>python manage.py check_expiry</code>.
+  Each run is recorded in the audit log.
+</p>
+{% endblock %}

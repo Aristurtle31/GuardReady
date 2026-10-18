@@ -1,0 +1,77 @@
+{% extends "base.html" %}
+{% block title %}Guard reports{% endblock %}
+{% block content %}
+<h1 class="h3 mb-1">Guard reports</h1>
+<p class="text-muted small mb-3">
+  Punctuality, guard type and character evaluation of each guard for the period.
+  Current guards are listed unless you pick "Guards who left". Click a name to
+  open that guard's report.
+</p>
+
+<form method="get" class="row g-2 align-items-end mb-3">
+  <div class="col-sm-6 col-lg-2">
+    <label class="form-label small" for="{{ form.start.id_for_label }}">{{ form.start.label }}</label>
+    {{ form.start }}
+  </div>
+  <div class="col-sm-6 col-lg-2">
+    <label class="form-label small" for="{{ form.end.id_for_label }}">{{ form.end.label }}</label>
+    {{ form.end }}
+  </div>
+  <div class="col-sm-6 col-lg-3">
+    <label class="form-label small" for="{{ form.show.id_for_label }}">{{ form.show.label }}</label>
+    {{ form.show }}
+  </div>
+  <div class="col-sm-6 col-lg-3">
+    <label class="form-label small" for="{{ form.guard_type.id_for_label }}">{{ form.guard_type.label }}</label>
+    {{ form.guard_type }}
+  </div>
+  <div class="col-lg-2">
+    <button type="submit" class="btn btn-primary btn-sm">Show</button>
+    <a href="{% url 'summary_report' %}" class="btn btn-link btn-sm">Clear</a>
+  </div>
+</form>
+
+{% if form.errors %}
+  <div class="alert alert-danger small">{{ form.problems }} The default period is shown instead.</div>
+{% endif %}
+
+{% with table=report.built_sections.0 %}
+  <div class="d-flex flex-wrap align-items-center gap-2 mb-2">
+    <p class="small text-muted mb-0">
+      {{ report.period_text }}. {{ table.row_count }} guard{{ table.row_count|pluralize }} listed.
+    </p>
+    <form method="post" action="{% url 'summary_report_csv' %}" class="ms-auto">
+      {% csrf_token %}
+      <input type="hidden" name="start" value="{{ filters.start|date:'Y-m-d' }}">
+      <input type="hidden" name="end" value="{{ filters.end|date:'Y-m-d' }}">
+      <input type="hidden" name="show" value="{{ filters.show }}">
+      <input type="hidden" name="guard_type" value="{{ filters.guard_type }}">
+      <button type="submit" class="btn btn-outline-primary btn-sm">Download CSV</button>
+    </form>
+  </div>
+
+  <div class="table-responsive">
+    <table class="table table-sm table-hover bg-white">
+      <thead>
+        <tr>{% for column in table.columns %}<th scope="col">{{ column }}</th>{% endfor %}</tr>
+      </thead>
+      <tbody>
+        {% for guard, cells in report.lines %}
+          <tr>
+            <td><a href="{% url 'guard_report' guard.pk %}">{{ cells.0 }}</a></td>
+            {% for cell in cells|slice:"1:" %}<td>{{ cell }}</td>{% endfor %}
+          </tr>
+        {% empty %}
+          <tr><td colspan="{{ table.columns|length }}" class="text-muted">No guards match these filters.</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  <p class="small text-muted">{{ table.NOTE }}</p>
+{% endwith %}
+
+<p class="small text-muted">
+  Each CSV download is recorded in the audit log as a REPORT entry, and the file
+  name starts with that report number.
+</p>
+{% endblock %}

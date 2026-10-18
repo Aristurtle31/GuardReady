@@ -7,6 +7,8 @@ entries, all inside one transaction. If any step fails, nothing is saved, not
 even the log entry.
 """
 
+from collections import Counter
+
 from django.db import transaction
 from django.db.models import Q
 
@@ -16,7 +18,7 @@ from audit.services import log_event
 
 from . import constants as c
 from .dates import long_date
-from .models import AgencyPermit, Guard
+from .models import NOTICE_TYPES, AgencyPermit, ExpiryNotice, Guard
 
 
 def all_guards():
@@ -126,15 +128,25 @@ def save_new_document(request, guard, form):
     return credential
 
 
+def resolved_text(count):
+    """A sentence for the audit log about the notices a renewal resolved."""
+    if count == 0:
+        return ""
+    if count == 1:
+        return " 1 open notice was resolved."
+    return f" {count} open notices were resolved."
+
+
 @transaction.atomic
 def save_renewal(request, credential, form):
     """
     Renew or correct one document through renew() (MedicalCert.renew() when
     the form has a result). renew() saves the old values in a
-    CredentialVersion first. Logs an UPDATE with the changed fields.
+    CredentialVersion first, and resolves the open notices about the old
+    expiry date. Logs an UPDATE with the changed fields.
     """
     summary = form.describe_changes(ChangeSummary())
-    credential.renew(by_user=request.user, **form.values())
+    resolved = credential.renew(by_user=request.user, **form.values())
     log_event(
         request,
         AuditEntry.UPDATE,
@@ -143,7 +155,7 @@ def save_renewal(request, credential, form):
         sensitive=summary.sensitive,
         details=(
             f"Renewed or corrected {credential.doc_type} of {credential.guard.summary()}. "
-            f"{summary}. The old values are kept in the history."
+            f"{summary}. The old values are kept in the history.{resolved_text(resolved)}"
         ),
     )
     return summary
@@ -227,7 +239,7 @@ def save_permit_renewal(request, permit, form):
     values in an AgencyPermitVersion first. Logs an UPDATE with the changes.
     """
     summary = form.describe_changes(ChangeSummary())
-    permit.renew(by_user=request.user, **form.values())
+    resolved = permit.renew(by_user=request.user, **form.values())
     log_event(
         request,
         AuditEntry.UPDATE,
@@ -235,7 +247,114 @@ def save_permit_renewal(request, permit, form):
         permit.pk,
         details=(
             f"Renewed or corrected the agency's {permit.name()}. {summary}. "
-            "The old values are kept in the history."
+            f"The old values are kept in the history.{resolved_text(resolved)}"
         ),
     )
     return summary
+
+
+# ---------------------------------------------------------------------------
+# Expiry notices (Stage 2)
+# ---------------------------------------------------------------------------
+
+
+def documents_to_check():
+    """
+    Every document that can get a notice: the credentials of guards who still
+    get notices (Active and On leave, not guards who left), and every agency permit.
+    """
+    documents = [
+        credential
+        for guard in all_guards()
+        if guard.employment_status().gets_notices()
+        for credential in guard.credential_list()
+    ]
+    documents += [permit.typed() for permit in AgencyPermit.objects.all()]
+    return documents
+
+
+def check_expiry():
+    """
+    POLYMORPHISM: ask every document for today's notice. Credentials and
+    agency permits are both ExpiringDocuments, so there is no if/elif on the
+    kind. make_notice() never sends a band twice, so this is safe to run more
+    than once a day. Returns the new notices.
+    """
+    new_notices = []
+    for document in documents_to_check():
+        notice = document.make_notice()
+        if notice is not None:
+            new_notices.append(notice)
+    return new_notices
+
+
+def notice_summary(notices):
+    """One line about new notices, like "3 new notices (1 week: 2, Expired: 1)."."""
+    if not notices:
+        return "No new notices."
+    bands = Counter(c.NOTICE_BAND_LABELS[notice.band] for notice in notices)
+    # In band order: 2 months, 1 month, ... Expired.
+    parts = ", ".join(
+        f"{label}: {bands[label]}" for label in c.NOTICE_BAND_LABELS.values() if label in bands
+    )
+    word = "notice" if len(notices) == 1 else "notices"
+    return f"{len(notices)} new {word} ({parts})."
+
+
+def find_notices(status_filter=ExpiryNotice.DEFAULT_FILTER, band=None, about=""):
+    """
+    Guard and agency notices together, newest first. Each notice decides with
+    is_shown() whether it is hidden (the open notices of a guard who left).
+    An unknown filter value shows everything that filter allows.
+    """
+    _label, statuses = ExpiryNotice.STATUS_FILTERS.get(
+        status_filter, ExpiryNotice.STATUS_FILTERS[ExpiryNotice.DEFAULT_FILTER]
+    )
+    notice_classes = [NOTICE_TYPES[about]] if about in NOTICE_TYPES else NOTICE_TYPES.values()
+    notices = []
+    for notice_class in notice_classes:
+        rows = notice_class.objects.filter(status__in=statuses)
+        if band is not None:
+            rows = rows.filter(band=band)
+        notices += [notice for notice in notice_class.with_details(rows) if notice.is_shown()]
+    return sorted(notices, key=lambda notice: (-notice.created_date.toordinal(), notice.band))
+
+
+def unread_notice_count():
+    """How many shown notices are still New. The navbar shows it."""
+    return len(find_notices("new"))
+
+
+def urgent_notices():
+    """Open notices in the 7 day, 1 day and expired bands, for the dashboard banner."""
+    return [notice for notice in find_notices("open") if notice.is_urgent()]
+
+
+@transaction.atomic
+def mark_notice_seen(request, notice):
+    """Move one notice from New to Seen through move_to(), and log an UPDATE."""
+    notice.mark_seen()
+    log_event(
+        request,
+        AuditEntry.UPDATE,
+        type(notice).__name__,
+        notice.pk,
+        details=f"Marked a notice as seen: {notice.message()}",
+    )
+
+
+@transaction.atomic
+def mark_all_notices_seen(request):
+    """Move every shown New notice to Seen, and log one UPDATE. Returns the notices."""
+    notices = find_notices("new")
+    for notice in notices:
+        notice.mark_seen()
+    if notices:
+        log_event(
+            request,
+            AuditEntry.UPDATE,
+            "Notification",
+            "all",
+            details=f"Marked {len(notices)} new notices as seen.",
+        )
+    return notices

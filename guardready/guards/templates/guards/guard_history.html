@@ -1,0 +1,40 @@
+{% extends "base.html" %}
+{% load guard_tags %}
+{% block title %}History of {{ guard.full_name }}{% endblock %}
+{% block content %}
+<div class="d-flex flex-wrap align-items-center gap-2 mb-3">
+  <h1 class="h3 mb-0">{{ guard.full_name }}</h1>
+  <span class="badge text-bg-{{ readiness|badge }} fs-6">{{ readiness }}</span>
+  {% if employment.list_label %}
+    <span class="badge text-bg-{{ employment.name|badge }} fs-6">{{ employment.list_label }}</span>
+  {% endif %}
+</div>
+
+{% include "guards/_guard_tabs.html" with active="history" %}
+
+<p class="text-muted small">
+  Postings, refused postings, document changes and expiry notices for this guard,
+  newest first. It is built from the records each time this page opens. Medical
+  results and personal details are never shown here.
+</p>
+
+<div class="table-responsive">
+  <table class="table table-sm bg-white align-middle">
+    <thead>
+      <tr><th>Date</th><th>Event</th><th>Details</th><th>By</th></tr>
+    </thead>
+    <tbody>
+      {% for row in rows %}
+        <tr>
+          <td class="text-nowrap">{{ row.date }}</td>
+          <td class="text-nowrap"><span class="badge text-bg-{{ row.color }}">{{ row.label }}</span></td>
+          <td>{{ row.details }}</td>
+          <td class="text-nowrap">{{ row.by }}</td>
+        </tr>
+      {% empty %}
+        <tr><td colspan="4" class="text-muted">Nothing in this guard's history yet.</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endblock %}

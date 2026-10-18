@@ -16,6 +16,8 @@
   {% endif %}
 </div>
 
+{% include "guards/_guard_tabs.html" with active="profile" %}
+
 <div class="row g-3 mb-3">
   <div class="col-md-6">
     <div class="card h-100">
@@ -30,7 +32,7 @@
           <th>Employment status</th>
           <td>
             <span class="badge text-bg-{{ employment.name|badge }}">{{ employment.name }}</span>
-            {% if employment.effective_date %}since {{ employment.effective_date|date:"F j, Y" }}{% else %}since he was hired{% endif %}
+            {% if employment.effective_date %}since {{ employment.effective_date|date:"F j, Y" }}{% else %}since the hire date{% endif %}
           </td>
         </tr>
         <tr><th>Contact number</th><td class="masked">{{ guard.masked_contact }}</td></tr>
@@ -85,7 +87,7 @@
       </table>
     </div>
   {% else %}
-    <div class="card-body small text-muted">No changes recorded. He has been Active since he was hired.</div>
+    <div class="card-body small text-muted">No changes recorded. Active since the hire date.</div>
   {% endif %}
 </div>
 
@@ -147,5 +149,39 @@
       <a class="btn btn-danger btn-sm" href="{% url 'step_up' guard.pk %}">Unlock with password</a>
     {% endif %}
   </div>
+</div>
+
+<div class="card mt-3">
+  <div class="card-header">Postings</div>
+  {% if postings %}
+    <div class="table-responsive">
+      <table class="table table-sm mb-0">
+        <thead>
+          <tr><th>Site</th><th>Post</th><th>Shift</th><th>From</th><th>To</th><th>Days</th><th>Assigned by</th></tr>
+        </thead>
+        <tbody>
+          {% for posting in postings %}
+            <tr>
+              <td>{{ posting.post.site.name }}</td>
+              <td>
+                {% if perms.deployment.assign_guard %}
+                  <a href="{% url 'post_detail' posting.post.pk %}">{{ posting.post.name }}</a>
+                {% else %}
+                  {{ posting.post.name }}
+                {% endif %}
+              </td>
+              <td>{{ posting.post.get_shift_display }}</td>
+              <td class="text-nowrap">{{ posting.start_date|date:"F j, Y" }}</td>
+              <td class="text-nowrap">{% if posting.end_date %}{{ posting.end_date|date:"F j, Y" }}{% else %}<span class="badge text-bg-primary">Still posted</span>{% endif %}</td>
+              <td>{{ posting.days_served }}</td>
+              <td>{{ posting.assigned_by.get_full_name|default:posting.assigned_by.username }}</td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  {% else %}
+    <div class="card-body small text-muted">Not posted yet.</div>
+  {% endif %}
 </div>
 {% endblock %}

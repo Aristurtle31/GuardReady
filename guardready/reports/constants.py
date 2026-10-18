@@ -1,4 +1,4 @@
-"""Constants for attendance, evaluations, and compliance reports."""
+"""Constants for attendance, evaluations, guard reports, and compliance reports."""
 
 # A guard is late if he timed in more than this many minutes after the
 # scheduled start of his shift.
@@ -15,6 +15,25 @@ HIGHEST_SCORE = 5
 ON_TIME = "On time"
 LATE = "Late"
 ABSENT = "Absent"
+ATTENDANCE_STATUSES = [ON_TIME, LATE, ABSENT]
+
+# ---------------------------------------------------------------------------
+# Guard reports (Stage 4)
+# ---------------------------------------------------------------------------
+
+# The guard reports cover the last 90 days unless HR picks another period.
+DEFAULT_PERIOD_DAYS = 90
+
+# The longest remark an evaluation form accepts.
+REMARKS_MAX_LENGTH = 500
+
+# Shown in a report table when there is nothing to count yet.
+NO_DUTIES = "No duties"
+NO_EVALUATIONS = "None"
+
+# A spreadsheet runs a cell that starts with one of these as a formula, so a
+# CSV cell that starts with one gets a ' in front first (CSV injection).
+FORMULA_STARTS = ("=", "+", "-", "@", "\t", "\r")
 
 # ---------------------------------------------------------------------------
 # Compliance reports (Stage 5)

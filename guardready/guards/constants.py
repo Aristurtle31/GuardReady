@@ -2,8 +2,9 @@
 Constants for guards, credentials, and expiry notices.
 
 Change a rule here and the whole app follows it.
-The validity periods are PLACEHOLDERS from the handoff spec. They must be
-confirmed against current PNP SOSIA rules before the final version.
+Validity periods: the LESP and the drug test are confirmed by the sources
+named next to them. The others are still PLACEHOLDERS, to be confirmed
+against current PNP SOSIA rules.
 """
 
 from django.utils.text import slugify
@@ -52,11 +53,20 @@ DOCUMENT_KINDS = {
     BASIC_COURSE: TRAINING,
 }
 
-# Validity periods in months (placeholders, see note at the top).
-LICENSE_VALIDITY_MONTHS = 24
+# Validity periods in months. HR always types the expiry date printed on the
+# paper. These only fill in the suggested date on the renew form.
+# Confirmed: RA 11917 (2022), Sec. 13. The LESP "shall be valid for a period
+# of five (5) years from the date of its issuance."
+LICENSE_VALIDITY_MONTHS = 60
+# PLACEHOLDER: not confirmed yet for the NBI or the police clearance.
 CLEARANCE_VALIDITY_MONTHS = 12
-DRUG_TEST_VALIDITY_MONTHS = 6
+# Confirmed: Dangerous Drugs Board Regulation No. 2, Series of 2003, Sec. 7.
+# A drug test result is "valid for one (1) year period from the date of issue."
+DRUG_TEST_VALIDITY_MONTHS = 12
+# PLACEHOLDER: no source found yet.
 NEURO_EXAM_VALIDITY_MONTHS = 12
+# PLACEHOLDER: no validity period found yet for the Basic Security Guard
+# Course certificate.
 TRAINING_VALIDITY_MONTHS = 36
 
 # Expiry notices: how many days before expiry each notice is sent.
@@ -143,8 +153,10 @@ PERMIT_KIND_CHOICES = [(LTO, "License to Operate (LTO)")]
 # The name of each permit in a URL, like "lto".
 PERMIT_SLUGS = {slugify(kind): kind for kind, _ in PERMIT_KIND_CHOICES}
 
-# PLACEHOLDER: 5 years. The PNP can set a shorter period, so the expiry date
-# is never filled in for HR. HR types the date printed on the permit.
+# Confirmed as the longest period: RA 11917 (2022), Sec. 7. The LTO is valid
+# "for a maximum period of five (5) years", and the Chief PNP may set a
+# shorter one. So the expiry date is never filled in for HR. HR types the
+# date printed on the permit.
 LTO_VALIDITY_MONTHS = 60
 
 # An agency notice names the agency instead of a guard.

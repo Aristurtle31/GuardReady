@@ -1,6 +1,6 @@
 """
-Tests for the guards app: Add Guard, Edit Guard, the document forms, and
-employment status.
+Tests for the guards app: Add Guard, Edit Guard, the document forms,
+employment status, agency permits, expiry notices, and the History tab.
 
 Run with: python manage.py test guards
 """
@@ -36,11 +36,12 @@ from .models import (
     CredentialVersion,
     EmploymentStatusChange,
     ExpiringDocument,
+    ExpiryNotice,
     Guard,
     LicenseToOperate,
     Notification,
 )
-from .services import current_guards
+from .services import check_expiry, current_guards
 from .status import (
     STATUS_CLASSES,
     ActiveStatus,
@@ -687,7 +688,7 @@ class AgencyPermitModelTests(TestCase):
         self.assertTrue(issubclass(AgencyPermit, ExpiringDocument))
         lto = AgencyPermit.for_kind(c.LTO)
         self.assertIsInstance(lto, LicenseToOperate)
-        self.assertEqual(lto.validity_months(), 60)  # the placeholder in the approved plan
+        self.assertEqual(lto.validity_months(), 60)  # the longest period in RA 11917, Sec. 7
         self.assertEqual(lto.name(), "License to Operate (LTO)")
         with self.assertRaises(NotImplementedError):
             AgencyPermit(kind=c.LTO).validity_months()
@@ -1204,7 +1205,7 @@ class EmploymentStatusTests(TestCase):
     def test_a_date_before_his_posting_started_is_refused(self):
         elmer = self.guard("GR-0005")  # posted 21 days ago
         response = self.change(elmer, c.ON_LEAVE, "Approved leave", days_ago=30)
-        self.assertContains(response, "before his current posting started")
+        self.assertContains(response, "before the current posting started")
         self.assertIsNotNone(elmer.current_assignment())
         self.assertFalse(elmer.status_changes.exists())
 
@@ -1215,7 +1216,7 @@ class EmploymentStatusTests(TestCase):
         before_hired = (self.today - arnel.date_hired).days + 1
         cases = [
             (-1, "The effective date cannot be in the future."),
-            (before_hired, "The effective date cannot be before he was hired"),
+            (before_hired, "The effective date cannot be before the hire date"),
         ]
         for days_ago, message in cases:
             with self.subTest(message=message):
@@ -1229,7 +1230,7 @@ class EmploymentStatusTests(TestCase):
         joel = self.guard("GR-0003")
         self.change(joel, c.ON_LEAVE, "Approved leave", days_ago=2)
         response = self.change(joel, c.ACTIVE, "Back from leave", days_ago=5)
-        self.assertContains(response, "before his last status change")
+        self.assertContains(response, "before the last status change")
         self.assertIsInstance(joel.employment_status(), OnLeaveStatus)
 
     def test_the_latest_change_decides_his_status(self):
@@ -1312,7 +1313,7 @@ class EmploymentStatusTests(TestCase):
         juan = self.guard("GR-0001")
         own = self.guard_client().get(reverse("guard_profile", args=[juan.pk]))
         self.assertContains(own, "Employment status")
-        self.assertContains(own, "since he was hired")
+        self.assertContains(own, "since the hire date")
         self.assertNotContains(own, reverse("change_status", args=[juan.pk]))
 
     def test_guard1_is_refused_on_the_change_status_page(self):
@@ -1334,3 +1335,399 @@ class EmploymentStatusTests(TestCase):
             change.save()
         with self.assertRaises(RecordLockedError):
             change.delete()
+
+
+# ---------------------------------------------------------------------------
+# Stage 2: expiry notices (check_expiry, the notifications page, the banner)
+# ---------------------------------------------------------------------------
+
+# The notices seed_demo makes, because it runs check_expiry() at the end:
+# (guard, document) -> band. Noel, who resigned, gets none.
+SEED_NOTICES = {
+    ("Ricardo Santos", c.LESP_LICENSE): 60,
+    ("Elmer Bautista", c.DRUG_TEST): 30,
+    ("Rowena Villanueva", c.DRUG_TEST): 14,
+    ("Rowena Villanueva", c.NBI_CLEARANCE): c.EXPIRED_BAND,
+    ("Danilo Ocampo", c.POLICE_CLEARANCE): 7,
+    ("Danilo Ocampo", c.NEURO_EXAM): c.EXPIRED_BAND,
+    ("Arnel Padilla", c.LESP_LICENSE): 1,
+}
+
+
+def every_notice():
+    """Guard and agency notices, straight from the tables."""
+    return list(Notification.objects.all()) + list(AgencyNotice.objects.all())
+
+
+class ExpiryCheckTests(TestCase):
+    """check_expiry(): the right bands, once each, and renewing resolves old notices."""
+
+    @classmethod
+    def setUpTestData(cls):
+        seed()
+        cls.admin = User.objects.get(username="admin")
+
+    def make_nbi_expire_tomorrow(self):
+        """Correct Juan's NBI expiry to tomorrow, so the next check finds a new band."""
+        juan = Guard.objects.get(employee_no="GR-0001")
+        nbi = juan.get_credential(c.NBI_CLEARANCE)
+        nbi.renew(nbi.number, nbi.issued, timezone.localdate() + timedelta(days=1), self.admin)
+        return juan
+
+    def test_the_seed_makes_the_expected_notices(self):
+        notices = Notification.objects.select_related("guard", "credential")
+        found = {
+            (notice.guard.full_name, notice.credential.doc_type): notice.band for notice in notices
+        }
+        self.assertEqual(found, SEED_NOTICES)
+        lto_notice = AgencyNotice.objects.get()
+        self.assertEqual((lto_notice.band, lto_notice.status), (7, ExpiryNotice.NEW))
+
+    def test_running_again_makes_no_new_notices(self):
+        self.assertEqual(check_expiry(), [])
+
+    def test_guards_who_left_get_no_notices(self):
+        noel = Guard.objects.get(employee_no="GR-0009")
+        self.assertTrue(noel.expired())  # he has expired documents
+        self.assertFalse(Notification.objects.filter(guard=noel).exists())
+
+    def test_a_new_band_is_found_on_the_next_check(self):
+        juan = self.make_nbi_expire_tomorrow()
+        [notice] = check_expiry()
+        self.assertEqual((notice.guard, notice.band), (juan, 1))
+
+    def test_the_command_prints_the_new_notices_and_logs_one_entry(self):
+        self.make_nbi_expire_tomorrow()
+        out = StringIO()
+        call_command("check_expiry", stdout=out)
+        self.assertIn("1 new notice (1 day: 1).", out.getvalue())
+        self.assertIn("Juan Dela Cruz: NBI Clearance expires in 1 day", out.getvalue())
+        entry = AuditEntry.objects.first()
+        self.assertEqual(
+            (entry.user, entry.username, entry.role, entry.action, entry.target_type),
+            (None, "system", "System", AuditEntry.CREATE, "Notification"),
+        )
+        self.assertIn("1 new notice", entry.details)
+        call_command("check_expiry", stdout=out)
+        self.assertIn("No new notices.", out.getvalue())
+
+    def test_renewing_resolves_the_open_notices_of_the_old_expiry_date(self):
+        danilo = Guard.objects.get(employee_no="GR-0007")
+        police = danilo.get_credential(c.POLICE_CLEARANCE)
+        notice = police.notifications.get()
+        today = timezone.localdate()
+        self.assertEqual(police.renew("PC-NEW", today, today + timedelta(days=365), self.admin), 1)
+        notice.refresh_from_db()
+        self.assertEqual(notice.status, ExpiryNotice.RESOLVED)
+        # His other open notice is about another document, so it stays open.
+        neuro_notice = danilo.get_credential(c.NEURO_EXAM).notifications.get()
+        self.assertEqual(neuro_notice.status, ExpiryNotice.NEW)
+
+    def test_a_medical_renewal_resolves_its_notice_too(self):
+        danilo = Guard.objects.get(employee_no="GR-0007")
+        neuro = danilo.get_credential(c.NEURO_EXAM)
+        today = timezone.localdate()
+        self.assertEqual(neuro.renew("NP-NEW", today, today + timedelta(days=365), self.admin), 1)
+        self.assertEqual(neuro.notifications.get().status, ExpiryNotice.RESOLVED)
+
+    def test_a_correction_that_keeps_the_expiry_keeps_the_notice_open(self):
+        police = Guard.objects.get(employee_no="GR-0007").get_credential(c.POLICE_CLEARANCE)
+        self.assertEqual(police.renew("PC-FIXED", police.issued, police.expires, self.admin), 0)
+        self.assertEqual(police.notifications.get().status, ExpiryNotice.NEW)
+
+    def test_renewing_the_lto_resolves_its_notice(self):
+        lto = AgencyPermit.on_file(c.LTO)
+        today = timezone.localdate()
+        self.assertEqual(lto.renew(lto.number, today, today + timedelta(days=1825), self.admin), 1)
+        self.assertEqual(lto.notices.get().status, ExpiryNotice.RESOLVED)
+
+    def test_the_renewal_entry_says_how_many_notices_were_resolved(self):
+        self.client.login(**ADMIN_LOGIN)
+        danilo = Guard.objects.get(employee_no="GR-0007")
+        police = danilo.get_credential(c.POLICE_CLEARANCE)
+        url = reverse("renew_document", args=[danilo.pk, slugify(c.POLICE_CLEARANCE)])
+        self.client.post(url, renew_data(police))
+        entry = AuditEntry.objects.get(action=AuditEntry.UPDATE, target_type="Credential")
+        self.assertIn("1 open notice was resolved.", entry.details)
+
+
+class NotificationPageTests(TestCase):
+    """The notifications page: guard and agency notices, filters, and Mark as seen."""
+
+    @classmethod
+    def setUpTestData(cls):
+        seed()
+
+    def setUp(self):
+        self.client.login(**ADMIN_LOGIN)
+
+    def page(self, **filters):
+        return self.client.get(reverse("notifications"), filters)
+
+    def test_guard_and_agency_notices_show_together(self):
+        response = self.page()
+        self.assertEqual(len(response.context["notices"]), len(SEED_NOTICES) + 1)
+        for notice in every_notice():
+            self.assertContains(response, notice.message())
+        # Each notice links to the page where HR acts on it.
+        guard_notice = Notification.objects.select_related("guard").first()
+        agency_notice = AgencyNotice.objects.get()
+        links = {
+            guard_notice: reverse("guard_profile", args=[guard_notice.guard_id]),
+            agency_notice: reverse("agency_permits"),
+        }
+        for notice, url in links.items():
+            with self.subTest(notice.message()):
+                link = f'<a href="{url}">{notice.message()}</a>'
+                self.assertContains(response, link, html=True)
+        opened = AuditEntry.objects.first()
+        self.assertEqual((opened.action, opened.target_type), (AuditEntry.VIEW, "Notification"))
+
+    def test_the_filters(self):
+        cases = {
+            "1 week band": ({"band": "7"}, 2),
+            "agency only": ({"about": "agency"}, 1),
+            "guards only": ({"about": "guard"}, len(SEED_NOTICES)),
+            "expired guard documents": ({"band": "0", "about": "guard"}, 2),
+            "new": ({"status": "new"}, len(SEED_NOTICES) + 1),
+            "resolved": ({"status": "resolved"}, 0),
+            "unknown values show the open notices": ({"status": "x", "band": "x", "about": "x"}, 8),
+        }
+        for name, (filters, count) in cases.items():
+            with self.subTest(name):
+                self.assertEqual(len(self.page(**filters).context["notices"]), count)
+
+    def test_marking_one_notice_as_seen_is_logged(self):
+        notice = AgencyNotice.objects.get()
+        url = reverse("notice_seen", args=["agency", notice.pk])
+        response = self.client.post(url, {"status": "open", "band": "", "about": ""})
+        self.assertRedirects(response, f"{reverse('notifications')}?status=open&band=&about=")
+        notice.refresh_from_db()
+        self.assertEqual(notice.status, ExpiryNotice.SEEN)
+        entry = AuditEntry.objects.get(action=AuditEntry.UPDATE, target_type="AgencyNotice")
+        self.assertIn("Marked a notice as seen", entry.details)
+
+        self.client.post(url)  # a second time: refused and logged
+        refused = AuditEntry.objects.filter(outcome=AuditEntry.DENIED, target_type="AgencyNotice")
+        self.assertEqual(refused.count(), 1)
+
+    def test_mark_all_new_as_seen(self):
+        self.client.post(reverse("all_notices_seen"))
+        self.assertEqual({notice.status for notice in every_notice()}, {ExpiryNotice.SEEN})
+        entry = AuditEntry.objects.get(action=AuditEntry.UPDATE, target_id="all")
+        self.assertIn(f"Marked {len(SEED_NOTICES) + 1} new notices as seen.", entry.details)
+
+    def test_the_navbar_shows_the_unread_count(self):
+        unread = f"{len(SEED_NOTICES) + 1} new</span>"
+        self.assertContains(self.client.get(reverse("dashboard")), unread)
+        self.client.post(reverse("all_notices_seen"))
+        self.assertNotContains(self.client.get(reverse("dashboard")), " new</span>")
+
+    def test_an_unknown_kind_is_not_found(self):
+        self.assertEqual(self.client.post(reverse("notice_seen", args=["xyz", 1])).status_code, 404)
+
+    def test_the_buttons_need_a_post(self):
+        notice = AgencyNotice.objects.get()
+        urls = [reverse("all_notices_seen"), reverse("notice_seen", args=["agency", notice.pk])]
+        for url in urls:
+            with self.subTest(url):
+                self.assertEqual(self.client.get(url).status_code, 405)
+        self.assertEqual(AgencyNotice.objects.get().status, ExpiryNotice.NEW)
+
+    def test_guard1_is_refused_on_every_notification_page(self):
+        self.client.logout()
+        self.client.login(**GUARD_LOGIN)
+        notice = AgencyNotice.objects.get()
+        urls = [
+            reverse("notifications"),
+            reverse("all_notices_seen"),
+            reverse("notice_seen", args=["agency", notice.pk]),
+        ]
+        for url in urls:
+            for method in (self.client.get, self.client.post):
+                with self.subTest(url=url, method=method.__name__):
+                    self.assertEqual(method(url).status_code, 403)
+                    entry = AuditEntry.objects.first()
+                    self.assertEqual((entry.action, entry.username), (AuditEntry.DENY, "guard1"))
+        self.assertEqual({n.status for n in every_notice()}, {ExpiryNotice.NEW})
+        own_profile = self.client.get(reverse("my_record"), follow=True)
+        self.assertNotContains(own_profile, reverse("notifications"))
+
+
+class ExpiryBannerTests(TestCase):
+    """The dashboard banner: open notices in the 7 day, 1 day and expired bands."""
+
+    @classmethod
+    def setUpTestData(cls):
+        seed()
+        cls.admin = User.objects.get(username="admin")
+
+    def setUp(self):
+        self.client.login(**ADMIN_LOGIN)
+
+    def banner(self):
+        return self.client.get(reverse("dashboard"))
+
+    def test_the_banner_lists_only_the_urgent_notices(self):
+        response = self.banner()
+        self.assertContains(response, "Urgent: 5 documents expire within 7 days or have expired.")
+        for notice in every_notice():
+            with self.subTest(notice.message()):
+                if notice.band in c.URGENT_BANDS:
+                    self.assertContains(response, notice.message())
+                else:
+                    self.assertNotContains(response, notice.message())
+
+    def test_a_seen_notice_stays_until_its_document_is_renewed(self):
+        self.client.post(reverse("all_notices_seen"))
+        self.assertContains(self.banner(), "Urgent: 5 documents")
+        police = Guard.objects.get(employee_no="GR-0007").get_credential(c.POLICE_CLEARANCE)
+        today = timezone.localdate()
+        police.renew("PC-NEW", today, today + timedelta(days=365), self.admin)
+        self.assertContains(self.banner(), "Urgent: 4 documents")
+
+    def test_a_guard_who_left_drops_out_but_his_notices_stay(self):
+        danilo = Guard.objects.get(employee_no="GR-0007")
+        today = timezone.localdate()
+        # Renew his police clearance first, so one of his notices is resolved.
+        police = danilo.get_credential(c.POLICE_CLEARANCE)
+        police.renew("PC-NEW", today, today + timedelta(days=365), self.admin)
+        danilo.change_employment_status(c.RESIGNED, c.RESIGNED_REASONS[0], today, self.admin)
+
+        neuro_notice = danilo.get_credential(c.NEURO_EXAM).notifications.get()
+        self.assertEqual(neuro_notice.status, ExpiryNotice.NEW)  # the notice itself did not change
+        dashboard = self.banner()
+        self.assertNotContains(dashboard, neuro_notice.message())
+        # 8 notices: his police notice was resolved and his neuro notice is hidden.
+        self.assertContains(dashboard, "6 new</span>")
+        self.assertNotContains(self.client.get(reverse("notifications")), "Danilo Ocampo")
+        # His resolved notice still shows under Resolved, and he gets no new ones.
+        resolved = self.client.get(reverse("notifications"), {"status": "resolved"})
+        self.assertContains(resolved, "Danilo Ocampo: Police Clearance")
+        self.assertEqual(check_expiry(), [])
+
+
+# ---------------------------------------------------------------------------
+# Stage 3: the History tab and the Postings table on the guard profile
+# ---------------------------------------------------------------------------
+
+
+class GuardHistoryPageTests(TestCase):
+    """The History tab: the same access as the profile, and nothing sensitive on it."""
+
+    @classmethod
+    def setUpTestData(cls):
+        seed()
+        cls.juan = Guard.objects.get(employee_no="GR-0001")  # guard1
+        cls.joel = Guard.objects.get(employee_no="GR-0003")
+
+    def test_admin_opens_the_history_tab(self):
+        self.client.login(**ADMIN_LOGIN)
+        url = reverse("guard_history", args=[self.juan.pk])
+        response = self.client.get(url)
+        self.assertEqual(response.status_code, 200)
+        for text in ["Posting", "Document change", "Mall Entrance A", "Main Lobby",
+                     "NBI Clearance renewed or corrected"]:
+            with self.subTest(text=text):
+                self.assertContains(response, text)
+        # Tab-style links: History is the active tab, and Profile links back.
+        profile_url = reverse("guard_profile", args=[self.juan.pk])
+        active = f'<a class="nav-link active" aria-current="page" href="{url}">History</a>'
+        self.assertContains(response, active, html=True)
+        self.assertContains(response, f'<a class="nav-link" href="{profile_url}">Profile</a>', html=True)
+        entry = AuditEntry.objects.first()
+        self.assertEqual(
+            (entry.action, entry.target_type, entry.target_id),
+            (AuditEntry.VIEW, "Guard", str(self.juan.pk)),
+        )
+
+    def test_guard1_opens_his_own_history_but_not_another_guards(self):
+        self.client.login(**GUARD_LOGIN)
+        own = self.client.get(reverse("guard_history", args=[self.juan.pk]))
+        self.assertEqual(own.status_code, 200)
+        response = self.client.get(reverse("guard_history", args=[self.joel.pk]))
+        self.assertEqual(response.status_code, 403)
+        entry = AuditEntry.objects.first()
+        self.assertEqual(
+            (entry.action, entry.username, entry.target_id),
+            (AuditEntry.DENY, "guard1", str(self.joel.pk)),
+        )
+
+    def test_the_history_tab_shows_no_sensitive_data(self):
+        self.client.login(**ADMIN_LOGIN)
+        for guard in (self.juan, self.joel):
+            page = self.client.get(reverse("guard_history", args=[guard.pk])).content.decode()
+            hidden = [
+                guard.contact_number,
+                guard.home_address,
+                guard.sss_number,
+                guard.tin_number,
+                guard.philhealth_number,
+                long_date(guard.birth_date),
+                nice_date(guard.birth_date),
+            ]
+            hidden += [credential.result for credential in guard.credential_list() if credential.result]
+            versions = CredentialVersion.objects.filter(credential__guard=guard)
+            hidden += [version.old_result for version in versions if version.old_result]
+            for value in hidden:
+                with self.subTest(guard=guard.employee_no, value=value):
+                    self.assertNotIn(value, page)
+
+    def test_the_profile_has_the_tabs_and_a_postings_table(self):
+        self.client.login(**ADMIN_LOGIN)
+        response = self.client.get(reverse("guard_profile", args=[self.juan.pk]))
+        self.assertContains(response, reverse("guard_history", args=[self.juan.pk]))
+        postings = list(response.context["postings"])
+        self.assertEqual([posting.post.name for posting in postings], ["Mall Entrance A", "Main Lobby"])
+        self.assertContains(response, "Still posted")
+        self.assertContains(response, reverse("post_detail", args=[postings[0].post.pk]))
+
+
+class NeutralWordingTests(TestCase):
+    """Page text never calls a guard "he", because some guards are lady guards."""
+
+    # Whole words only, so words like "the", "this" or "when" never match.
+    GENDERED = re.compile(r"\b(he|his|him|himself)\b", re.IGNORECASE)
+
+    @classmethod
+    def setUpTestData(cls):
+        seed()
+        cls.rowena = Guard.objects.get(employee_no="GR-0006")  # a Lady Security Guard
+
+    @staticmethod
+    def visible_text(response):
+        """The words a user reads on the page: no tags, scripts or styles."""
+        html = response.content.decode()
+        html = re.sub(r"<(script|style)\b.*?</\1>", " ", html, flags=re.S)
+        return re.sub(r"<[^>]+>", " ", html)
+
+    def test_the_guard_pages_use_neutral_words(self):
+        self.client.login(**ADMIN_LOGIN)
+        pk = self.rowena.pk
+        urls = [
+            reverse("add_guard"),
+            reverse("guard_profile", args=[pk]),
+            reverse("guard_history", args=[pk]),
+            reverse("change_status", args=[pk]),
+            reverse("guard_report", args=[pk]),
+            reverse("record_attendance", args=[pk]),
+            reverse("add_evaluation", args=[pk]),
+        ]
+        for url in urls:
+            with self.subTest(url=url):
+                response = self.client.get(url)
+                self.assertEqual(response.status_code, 200)
+                self.assertIsNone(self.GENDERED.search(self.visible_text(response)))
+
+    def test_the_refusal_messages_use_neutral_words(self):
+        before_hired = self.rowena.date_hired - timedelta(days=1)
+        with self.assertRaises(ValidationError) as status_error:
+            self.rowena.check_status_change(c.ON_LEAVE, c.ON_LEAVE_REASONS[0], before_hired)
+        self.client.login(**GUARD_LOGIN)
+        refused = self.client.get(reverse("guard_profile", args=[self.rowena.pk]))
+        self.assertEqual(refused.status_code, 403)
+        messages = status_error.exception.messages + [self.visible_text(refused)]
+        for message in messages:
+            with self.subTest(message=message[:60]):
+                self.assertIsNone(self.GENDERED.search(message))
+        self.assertIn("before the hire date", " ".join(status_error.exception.messages))

@@ -1,0 +1,36 @@
+{% extends "base.html" %}
+{% block title %}Record attendance{% endblock %}
+{% block content %}
+<h1 class="h3 mb-1">Record attendance</h1>
+<p class="text-muted mb-3">{{ guard.summary }}</p>
+
+<div class="card mb-3">
+  <div class="card-body small">
+    <p class="mb-1">
+      {% if posting %}
+        Posted now at {{ posting.post }}. The shift starts at {{ posting.post.scheduled_start|time:"g:i A" }}.
+      {% else %}
+        Not posted right now. You can still record a past day when this guard was posted.
+      {% endif %}
+    </p>
+    <p class="mb-0">
+      GuardReady takes the post and the shift start from the guard's posting on that
+      day. Timing in more than {{ grace_minutes }} minutes after the start counts as
+      late. A record cannot be changed or deleted later, and each day can be recorded
+      only once.
+    </p>
+  </div>
+</div>
+
+<form method="post" novalidate class="card mb-3">
+  {% csrf_token %}
+  <div class="card-header fw-semibold">{{ form.title }}</div>
+  <div class="card-body">
+    {% include "guards/_section.html" %}
+    <div class="mt-3">
+      <button type="submit" class="btn btn-primary">Save attendance</button>
+      <a class="btn btn-link" href="{% url 'guard_report' guard.pk %}">Cancel</a>
+    </div>
+  </div>
+</form>
+{% endblock %}

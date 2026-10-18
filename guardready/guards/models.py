@@ -12,7 +12,9 @@ renew() and make_notice(). Credential (a guard's document) and AgencyPermit
 
 ExpiryNotice is the abstract base of the two notice models: Notification (a
 guard's document) and AgencyNotice (an agency permit). They share the fields,
-message(), move_to() and the rest. Each one only says whose document it is.
+message(), move_to() and the rest. Each one only says whose document it is,
+which page it links to, and whether its owner still gets notices.
+NOTICE_TYPES picks the notice class from its kind, like ACCOUNT_TYPES.
 
 Credential is one table with four proxy subclasses: License, Clearance,
 MedicalCert, and TrainingCert. A proxy shares the same table but has its
@@ -25,6 +27,8 @@ status. The rules for each status live in guards/status.py.
 from django.conf import settings
 from django.core.exceptions import ValidationError
 from django.db import models
+from django.db.models import Q
+from django.urls import reverse
 from django.utils import timezone
 from django.utils.text import slugify
 
@@ -231,6 +235,17 @@ class Guard(Employee):
         open_assignments = self.assignments.filter(end_date__isnull=True)
         return open_assignments.select_related("post__site").first()
 
+    def posting_on(self, day):
+        """
+        The posting he worked on this day, or None. A posting covers its start
+        date up to the day before its end date, because the end date is the day
+        he left (or moved to his next post).
+        """
+        covering = self.assignments.filter(start_date__lte=day).filter(
+            Q(end_date__isnull=True) | Q(end_date__gt=day)
+        )
+        return covering.select_related("post__site").first()
+
     # --- Employment status (the rules for each status are in guards/status.py) ---
 
     def status_history(self):
@@ -263,17 +278,17 @@ class Guard(Employee):
             errors.append("The effective date cannot be in the future.")
         if effective_date < self.date_hired:
             errors.append(
-                f"The effective date cannot be before he was hired ({long_date(self.date_hired)})."
+                f"The effective date cannot be before the hire date ({long_date(self.date_hired)})."
             )
         if current.effective_date and effective_date < current.effective_date:
             errors.append(
-                "The effective date cannot be before his last status change "
+                "The effective date cannot be before the last status change "
                 f"({long_date(current.effective_date)})."
             )
         posting = self.current_assignment()
         if posting and not new.can_be_assigned() and effective_date < posting.start_date:
             errors.append(
-                "The effective date is before his current posting started "
+                "The effective date is before the current posting started "
                 f"({long_date(posting.start_date)}). Use that date or a later one."
             )
         if errors:
@@ -302,7 +317,7 @@ class Guard(Employee):
         if posting is not None and not new.can_be_assigned():
             posting.close(effective_date)
             effects.append(
-                f"His open posting at {posting.post} was closed on {long_date(effective_date)}"
+                f"The open posting at {posting.post} was closed on {long_date(effective_date)}"
             )
         if self.user is not None and self.user.is_active != new.allows_login():
             # Django refuses an inactive user on his next click, so he is logged out.
@@ -414,7 +429,9 @@ class ExpiringDocument(models.Model):
     def renew(self, number, issued, expires, by_user, changed_at=None):
         """
         ENCAPSULATION: the only way to change a document's number and dates.
-        The old values are saved in a version record first.
+        The old values are saved in a version record first. Then the open
+        notices about an expiry date the document no longer has are resolved.
+        Returns how many notices were resolved.
         changed_at is only passed by seed_demo to record a past renewal.
         """
         self.check_values(number, issued, expires)
@@ -423,6 +440,22 @@ class ExpiringDocument(models.Model):
         self.issued = issued
         self.expires = expires
         self.save()
+        return self._resolve_old_notices()
+
+    def _resolve_old_notices(self):
+        """
+        Resolve the open notices about any other expiry date. A correction that
+        keeps the same expiry date keeps its notices open, because the
+        document still expires then.
+        """
+        old_notices = list(
+            self._notices()
+            .filter(status__in=ExpiryNotice.OPEN)
+            .exclude(expiry_date=self.expires)
+        )
+        for notice in old_notices:
+            notice.resolve()
+        return len(old_notices)
 
     def _save_version(self, by_user, changed_at):
         """Keep the values on file now in a version record. Each child has its own model."""
@@ -608,10 +641,11 @@ class MedicalCert(Credential):
 
     def renew(self, number, issued, expires, by_user, changed_at=None, result=None):
         """POLYMORPHISM: a new medical exam also has a new result."""
-        super().renew(number, issued, expires, by_user, changed_at)
+        resolved = super().renew(number, issued, expires, by_user, changed_at)
         if result is not None:
             self.result = result
             self.save()
+        return resolved
 
 
 class TrainingCert(Credential):
@@ -654,6 +688,24 @@ class CredentialVersion(AppendOnlyRecord):
     def __str__(self):
         return f"{self.credential.doc_type} before {self.changed_at:%Y-%m-%d}"
 
+    def new_values(self):
+        """
+        The number and dates that replaced these old values: the old values of
+        the next version, or the values on file now if this is the newest one.
+        Never the result. The guard history and the SOSIA report both use this.
+        """
+        later = (
+            self.credential.versions.filter(
+                Q(changed_at__gt=self.changed_at) | Q(changed_at=self.changed_at, id__gt=self.id)
+            )
+            .order_by("changed_at", "id")
+            .first()
+        )
+        if later is None:
+            now = self.credential
+            return {"number": now.number, "issued": now.issued, "expires": now.expires}
+        return {"number": later.old_number, "issued": later.old_issued, "expires": later.old_expires}
+
 
 class EmploymentStatusChange(AppendOnlyRecord):
     """One change of a guard's employment status. Never edited or deleted."""
@@ -692,6 +744,21 @@ class ExpiryNotice(models.Model):
     STATUS_ORDER = [NEW, SEEN, RESOLVED]
     STATUS_CHOICES = [(status, status) for status in STATUS_ORDER]
     BAND_CHOICES = list(c.NOTICE_BAND_LABELS.items())
+    # A notice is open until its document is renewed with a new expiry date.
+    OPEN = [NEW, SEEN]
+    # The status filter of the notifications page: key -> (label, statuses).
+    STATUS_FILTERS = {
+        "open": ("Open (new and seen)", OPEN),
+        "new": ("New", [NEW]),
+        "seen": ("Seen", [SEEN]),
+        "resolved": ("Resolved", [RESOLVED]),
+        "all": ("All", STATUS_ORDER),
+    }
+    DEFAULT_FILTER = "open"
+
+    # Each kind of notice sets these: its name in a URL, and what it is about.
+    KIND = ""
+    ABOUT = ""
 
     band = models.PositiveSmallIntegerField(choices=BAND_CHOICES)
     expiry_date = models.DateField()
@@ -717,6 +784,19 @@ class ExpiryNotice(models.Model):
         """The name of the document, like "NBI Clearance"."""
         raise NotImplementedError("Each kind of notice names its document.")
 
+    def get_absolute_url(self):
+        """The page where HR acts on this notice."""
+        raise NotImplementedError("Each kind of notice has its own page.")
+
+    def _owner_gets_notices(self):
+        """True if whoever owns the document still gets notices. A child can say no."""
+        return True
+
+    @classmethod
+    def with_details(cls, rows):
+        """These rows, with what message() and is_shown() read loaded in a few queries."""
+        return rows
+
     # --- Shared steps, the same for every notice ---
 
     def message(self):
@@ -732,6 +812,17 @@ class ExpiryNotice(models.Model):
     def is_urgent(self):
         """7 day, 1 day, and expired notices go in the dashboard banner."""
         return self.band in c.URGENT_BANDS
+
+    def is_open(self):
+        return self.status in self.OPEN
+
+    def is_shown(self):
+        """
+        Open notices of an owner who no longer gets notices (a guard who left)
+        are hidden from the notifications page, the navbar count and the
+        banner. The notice itself does not change.
+        """
+        return not self.is_open() or self._owner_gets_notices()
 
     def move_to(self, new_status):
         """
@@ -771,11 +862,25 @@ class Notification(ExpiryNotice):
             ),
         ]
 
+    KIND = "guard"
+    ABOUT = "Guard document"
+
     def _who(self):
         return self.guard.full_name
 
     def _document_name(self):
         return self.credential.doc_type
+
+    def get_absolute_url(self):
+        return reverse("guard_profile", args=[self.guard_id])
+
+    def _owner_gets_notices(self):
+        """POLYMORPHISM: a guard who left (Resigned, Let go) gets no notices."""
+        return self.guard.employment_status().gets_notices()
+
+    @classmethod
+    def with_details(cls, rows):
+        return rows.select_related("guard", "credential").prefetch_related("guard__status_changes")
 
 
 # ---------------------------------------------------------------------------
@@ -895,7 +1000,7 @@ class LicenseToOperate(AgencyPermit):
         default_permissions = ()
 
     def validity_months(self):
-        """PLACEHOLDER. Only shown as information. HR always types the expiry date."""
+        """The longest period by law (RA 11917, Sec. 7). HR always types the real expiry date."""
         return c.LTO_VALIDITY_MONTHS
 
 
@@ -937,8 +1042,26 @@ class AgencyNotice(ExpiryNotice):
             ),
         ]
 
+    KIND = "agency"
+    ABOUT = "Agency permit"
+
     def _who(self):
         return c.AGENCY_NOTICE_NAME
 
     def _document_name(self):
         return self.permit.name()
+
+    def get_absolute_url(self):
+        return reverse("agency_permits")
+
+    @classmethod
+    def with_details(cls, rows):
+        return rows.select_related("permit")
+
+
+# The notifications page and its URLs pick the notice class from its KIND,
+# like ACCOUNT_TYPES in the bank activity.
+NOTICE_TYPES = {
+    Notification.KIND: Notification,
+    AgencyNotice.KIND: AgencyNotice,
+}

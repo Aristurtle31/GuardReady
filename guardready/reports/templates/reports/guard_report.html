@@ -1,0 +1,61 @@
+{% extends "base.html" %}
+{% load guard_tags %}
+{% block title %}Report of {{ guard.full_name }}{% endblock %}
+{% block content %}
+<div class="d-flex flex-wrap align-items-center gap-2 mb-3">
+  <h1 class="h3 mb-0">{{ guard.full_name }}</h1>
+  <span class="badge text-bg-{{ readiness|badge }} fs-6">{{ readiness }}</span>
+  {% if employment.list_label %}
+    <span class="badge text-bg-{{ employment.name|badge }} fs-6">{{ employment.list_label }}</span>
+  {% endif %}
+</div>
+
+{% include "guards/_guard_tabs.html" with active="report" %}
+
+<p class="text-muted small">
+  {{ guard.summary }}. Punctuality and character evaluations for the period.
+  Medical results and personal details are never part of this report.
+</p>
+
+<form method="get" class="row g-2 align-items-end mb-3">
+  <div class="col-sm-4 col-lg-3">
+    <label class="form-label small" for="{{ form.start.id_for_label }}">{{ form.start.label }}</label>
+    {{ form.start }}
+  </div>
+  <div class="col-sm-4 col-lg-3">
+    <label class="form-label small" for="{{ form.end.id_for_label }}">{{ form.end.label }}</label>
+    {{ form.end }}
+  </div>
+  <div class="col-sm-4 col-lg-3">
+    <button type="submit" class="btn btn-primary btn-sm">Show</button>
+    <a href="{% url 'guard_report' guard.pk %}" class="btn btn-link btn-sm">Clear</a>
+  </div>
+</form>
+
+{% if form.errors %}
+  <div class="alert alert-danger small">{{ form.problems }} The default period is shown instead.</div>
+{% endif %}
+
+<div class="d-flex flex-wrap align-items-center gap-2 mb-3">
+  <p class="small text-muted mb-0">{{ report.period_text }}.</p>
+  <div class="ms-auto d-flex flex-wrap gap-2">
+    {% if perms.reports.record_performance %}
+      <a class="btn btn-outline-primary btn-sm" href="{% url 'record_attendance' guard.pk %}">Record attendance</a>
+      <a class="btn btn-outline-primary btn-sm" href="{% url 'add_evaluation' guard.pk %}">Add evaluation</a>
+    {% endif %}
+    <form method="post" action="{% url 'guard_report_csv' guard.pk %}">
+      {% csrf_token %}
+      <input type="hidden" name="start" value="{{ filters.start|date:'Y-m-d' }}">
+      <input type="hidden" name="end" value="{{ filters.end|date:'Y-m-d' }}">
+      <button type="submit" class="btn btn-outline-secondary btn-sm">Download CSV</button>
+    </form>
+  </div>
+</div>
+
+{% include "reports/_report_sections.html" with sections=report.built_sections %}
+
+<p class="small text-muted">
+  Each CSV download is recorded in the audit log as a REPORT entry, and the file
+  name starts with that report number.
+</p>
+{% endblock %}

@@ -1,0 +1,23 @@
+{# The tables of a guard report on screen: each section's title, note, columns and rows. #}
+{% for section in sections %}
+  <div class="card mb-3">
+    <div class="card-header">{{ section.title }}</div>
+    {% if section.NOTE %}<div class="card-body py-2 small text-muted">{{ section.NOTE }}</div>{% endif %}
+    {% if section.row_count %}
+      <div class="table-responsive">
+        <table class="table table-sm mb-0">
+          <thead>
+            <tr>{% for column in section.columns %}<th scope="col">{{ column }}</th>{% endfor %}</tr>
+          </thead>
+          <tbody>
+            {% for row in section.rows %}
+              <tr>{% for cell in row %}<td>{{ cell }}</td>{% endfor %}</tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    {% else %}
+      <div class="card-body small text-muted">Nothing recorded in this period.</div>
+    {% endif %}
+  </div>
+{% endfor %}

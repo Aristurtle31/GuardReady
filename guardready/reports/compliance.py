@@ -10,36 +10,28 @@ Never printed on any report: medical results, birth date, home address,
 contact number, SSS, TIN, PhilHealth, session keys, and passwords.
 
 OOP in this file
-- ABSTRACTION: ComplianceReport and ReportSection are abstract base classes.
-- INHERITANCE: ComplianceReport -> GovernmentReport -> SosiaReport,
-  NpcReport, OtherGovernmentReport. ComplianceReport -> ClientReport.
-  ReportSection -> AuditLogSection and ClientSection -> the printed tables.
+- INHERITANCE: ComplianceReport extends Report, the one report base class in
+  reports/base.py (Stage 4). ComplianceReport -> GovernmentReport ->
+  SosiaReport, NpcReport, OtherGovernmentReport. ComplianceReport ->
+  ClientReport. ReportSection (also in reports/base.py) -> AuditLogSection and
+  ClientSection -> the printed tables.
 - POLYMORPHISM: every report overrides title() and sections(). Every table
-  overrides columns() and _collect().
+  overrides columns() and _collect(). ComplianceReport overrides
+  _chosen_sections(), so only the ticked sections are built.
 - COMPOSITION: a report owns the tables (sections) it prints.
 - FACTORY: COMPLIANCE_REPORTS picks the report class once, like
   ACCOUNT_TYPES and create_account() in the bank activity.
 """
 
-from abc import ABC, abstractmethod
-
-from django.db.models import Q
 from django.utils import timezone
 
 from audit.models import AuditEntry
-from deployment.models import Assignment
-from guards.constants import (
-    CLEARED,
-    LESP_LICENSE,
-    LTO,
-    NOT_CLEARED,
-    NOT_ON_FILE,
-    REQUIRED_DOCUMENTS,
-)
+from guards.constants import CLEARED, LTO, NOT_CLEARED, NOT_ON_FILE, REQUIRED_DOCUMENTS
 from guards.dates import long_date, long_datetime
 from guards.models import AgencyPermit, CredentialVersion
 from guards.services import all_guards, current_guards
 
+from .base import Report, ReportSection, person_name
 from .constants import (
     ABSENT,
     AGENCY_ADDRESS,
@@ -47,13 +39,9 @@ from .constants import (
     CONFIDENTIALITY_NOTE,
     LATE,
     LTO_NOT_ON_FILE,
-    NAME_NOT_ON_FILE,
     NO,
     NONE_LISTED,
     ON_TIME,
-    REPORT_NUMBER_DIGITS,
-    REPORT_NUMBER_PREFIX,
-    STILL_POSTED,
     YES,
 )
 from .forms import ClientRequestForm, GovernmentRequestForm
@@ -62,94 +50,9 @@ from .models import AttendanceRecord
 YES_NO = {True: YES, False: NO}
 
 
-def person_name(user):
-    """A user's full name, never the username. Client reports must not show usernames."""
-    return user.get_full_name().strip() or NAME_NOT_ON_FILE
-
-
 # ---------------------------------------------------------------------------
-# Sections: one printed table each
+# Sections: one printed table each (ReportSection is in reports/base.py)
 # ---------------------------------------------------------------------------
-
-
-class ReportSection(ABC):
-    """ABSTRACTION: one printed table. Each subclass picks its own columns and rows."""
-
-    KEY = ""
-    TITLE = ""
-    NOTE = ""
-
-    def __init__(self, report):
-        self._report = report
-        self._rows = []
-        self._guard_ids = set()
-        self._built = False
-
-    def __str__(self):
-        return f"{self.TITLE}: {len(self._rows)} rows"
-
-    @abstractmethod
-    def columns(self):
-        """The column headings, in print order."""
-
-    @abstractmethod
-    def _collect(self):
-        """Run the query and return the rows. Each row is a list of printable values."""
-
-    def build(self):
-        """Run the query once. Calling build() again does nothing."""
-        if not self._built:
-            self._rows = self._collect()
-            self._built = True
-        return self
-
-    @property
-    def title(self):
-        return self.TITLE
-
-    @property
-    def rows(self):
-        return list(self._rows)
-
-    @property
-    def row_count(self):
-        return len(self._rows)
-
-    @property
-    def guard_ids(self):
-        """The guards this table names. Counted for the REPORT audit entry."""
-        return set(self._guard_ids)
-
-    # --- Helpers the subclasses share ---
-
-    def _guard_row(self, guard, *cells):
-        """A row that names a guard. The guard is counted for the audit log."""
-        self._guard_ids.add(guard.pk)
-        return list(cells)
-
-    def _lesp_cells(self, guard):
-        """The LESP number and expiry date, or Not on file."""
-        lesp = guard.get_credential(LESP_LICENSE)
-        if lesp is None:
-            return NOT_ON_FILE, NOT_ON_FILE
-        return lesp.number, long_date(lesp.expires)
-
-    def _postings(self):
-        """Every assignment that overlaps the report period, at every site."""
-        start, end = self._report.period_start, self._report.period_end
-        return (
-            Assignment.objects.filter(start_date__lte=end)
-            .filter(Q(end_date__isnull=True) | Q(end_date__gte=start))
-            .select_related("guard", "post__site")
-            .order_by("start_date", "guard__last_name", "guard__first_name", "id")
-        )
-
-    @staticmethod
-    def _end_text(assignment):
-        """The last day of a posting, or Still posted."""
-        if assignment.end_date is None:
-            return STILL_POSTED
-        return long_date(assignment.end_date)
 
 
 # --- PNP SOSIA sections ---
@@ -296,16 +199,7 @@ class CredentialChangesSection(ReportSection):
     @staticmethod
     def _new_expiry(version):
         """The expiry date that replaced the old one: the next version's old value, or today's value."""
-        later = (
-            version.credential.versions.filter(
-                Q(changed_at__gt=version.changed_at) | Q(changed_at=version.changed_at, id__gt=version.id)
-            )
-            .order_by("changed_at", "id")
-            .first()
-        )
-        if later is None:
-            return version.credential.expires
-        return later.old_expires
+        return version.new_values()["expires"]
 
 
 # --- National Privacy Commission sections ---
@@ -564,43 +458,29 @@ CLIENT_SECTIONS = (SiteGuardsSection, SiteDeploymentsSection, SiteAttendanceSect
 # ---------------------------------------------------------------------------
 
 
-class ComplianceReport(ABC):
-    """ABSTRACTION: a printable report for one outside requester, showing only what they need."""
+class ComplianceReport(Report):
+    """A printable report for one outside requester, showing only what they need. Still abstract."""
 
     KIND = ""
     ABOUT = ""
     FORM_CLASS = None
+    # Its REPORT entry is sensitive, because personal data leaves the agency.
+    TARGET_TYPE = "ComplianceReport"
+    SENSITIVE = True
 
     def __init__(self, details, section_keys, prepared_by):
+        super().__init__(details["period_start"], details["period_end"], prepared_by)
         self._requesting_party = details["requesting_party"]
         self._contact_name = details["contact_name"]
         self._contact_position = details["contact_position"]
         self._reference_number = details["reference_number"]
         self._purpose = details["purpose"]
-        self._period_start = details["period_start"]
-        self._period_end = details["period_end"]
         self._section_keys = self._allowed_keys(section_keys)
-        self._prepared_by = prepared_by
         # Read once, when the report is made. Never a made-up number.
         self._lto_number = self.lto_number_now()
-        self._sections = []
-        self._entry_id = None
-        self._generated_at = None
 
-    def __str__(self):
-        return f"{self.title()} {self.number}".strip()
-
-    # --- What every report overrides (POLYMORPHISM) ---
-
-    @classmethod
-    @abstractmethod
-    def title(cls):
-        """The title printed at the top of the report."""
-
-    @classmethod
-    @abstractmethod
-    def sections(cls):
-        """The section classes this report may print, in print order."""
+    # --- What every compliance report overrides (POLYMORPHISM) ---
+    # title() and sections() are abstract in Report.
 
     @classmethod
     def default_section_keys(cls):
@@ -614,7 +494,15 @@ class ComplianceReport(ABC):
             ("Requested by", f"{self._contact_name}, {self._contact_position}"),
             ("Request reference number", self._reference_number),
             ("Purpose", self._purpose),
-            ("Period covered", f"{long_date(self._period_start)} to {long_date(self._period_end)}"),
+            ("Period covered", self.period_text()),
+        ]
+
+    def _chosen_sections(self):
+        """POLYMORPHISM: only the sections that were ticked, still in print order."""
+        return [
+            section_class
+            for section_class in self.sections()
+            if section_class.KEY in self._section_keys
         ]
 
     # --- The request pages ---
@@ -665,23 +553,7 @@ class ComplianceReport(ABC):
             "default_sections": [section.TITLE for section in cls.sections() if section.KEY in defaults],
         }
 
-    # --- Building and numbering, the same for every report ---
-
-    def build(self):
-        """Run every ticked section once, in print order. Returns the report."""
-        self._sections = [
-            section_class(self).build()
-            for section_class in self.sections()
-            if section_class.KEY in self._section_keys
-        ]
-        return self
-
-    def assign_number(self, entry):
-        """ENCAPSULATION: the report number comes from its REPORT audit entry, and only once."""
-        if self._entry_id is not None:
-            raise ValueError("This report already has a number.")
-        self._entry_id = entry.pk
-        self._generated_at = entry.timestamp
+    # --- build(), assign_number(), header_rows() and log_details() come from Report ---
 
     def _allowed_keys(self, keys):
         """Admin may untick sections, but never add one that is not on this report's list."""
@@ -691,30 +563,7 @@ class ComplianceReport(ABC):
             raise ValueError(f"Not allowed on this report: {', '.join(unknown)}")
         return list(keys)
 
-    # --- Read-only values for the print page and the audit log ---
-
-    @property
-    def number(self):
-        """Like GR-RPT-000123. Empty until assign_number() runs."""
-        if self._entry_id is None:
-            return ""
-        return f"{REPORT_NUMBER_PREFIX}{self._entry_id:0{REPORT_NUMBER_DIGITS}d}"
-
-    @property
-    def period_start(self):
-        return self._period_start
-
-    @property
-    def period_end(self):
-        return self._period_end
-
-    @property
-    def built_sections(self):
-        return list(self._sections)
-
-    @property
-    def prepared_by_name(self):
-        return person_name(self._prepared_by)
+    # --- Read-only values for the print page (number, period and sections come from Report) ---
 
     @property
     def agency_name(self):
@@ -732,33 +581,6 @@ class ComplianceReport(ABC):
     @property
     def confidentiality_note(self):
         return CONFIDENTIALITY_NOTE
-
-    def header_rows(self):
-        """Everything printed under the title."""
-        return [
-            ("Report number", self.number),
-            ("Date and time generated", f"{long_datetime(self._generated_at)} (Philippine time)"),
-            ("Generated by", self.prepared_by_name),
-        ] + self._request_rows()
-
-    def guards_printed(self):
-        """How many different guards are named anywhere in the report."""
-        guard_ids = set()
-        for section in self._sections:
-            guard_ids |= section.guard_ids
-        return len(guard_ids)
-
-    def rows_printed(self):
-        return sum(section.row_count for section in self._sections)
-
-    def log_details(self):
-        """One line for the REPORT audit entry: the request, the sections, and the counts."""
-        parts = [f"Report: {self.title()}"]
-        parts += [f"{label}: {value}" for label, value in self._request_rows()]
-        parts.append("Sections: " + "; ".join(section.title for section in self._sections))
-        parts.append(f"Guards printed: {self.guards_printed()}")
-        parts.append(f"Rows printed: {self.rows_printed()}")
-        return " | ".join(parts)
 
 
 class GovernmentReport(ComplianceReport):

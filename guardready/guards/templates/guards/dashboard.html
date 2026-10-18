@@ -4,6 +4,22 @@
 {% block content %}
 <h1 class="h3 mb-3">Dashboard</h1>
 
+{% if urgent %}
+  <div class="alert alert-danger">
+    {% with count=urgent|length %}
+      <strong>Urgent: {{ count }} document{{ count|pluralize }} expire{{ count|pluralize:"s," }} within 7 days or {{ count|pluralize:"has,have" }} expired.</strong>
+    {% endwith %}
+    <ul class="mb-1 mt-1">
+      {% for notice in urgent %}
+        <li>{{ notice.message }}</li>
+      {% endfor %}
+    </ul>
+    {% if perms.guards.manage_credentials %}
+      <a href="{% url 'notifications' %}">Open notifications</a>
+    {% endif %}
+  </div>
+{% endif %}
+
 <div class="row g-3">
   <div class="col-6 col-md-3">
     <a class="card stat-card h-100 text-dark" href="{% url 'guard_list' %}">

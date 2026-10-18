@@ -1,7 +1,7 @@
-"""Small date helpers used by the models, the seed data, the forms, and the reports."""
+"""Small date helpers for the models, the seed data, the forms, the reports, and the guard history."""
 
 import calendar
-from datetime import date
+from datetime import date, datetime, time
 
 from django.utils import timezone
 
@@ -57,3 +57,14 @@ def long_datetime(value, zone=None):
         return ""
     local = timezone.localtime(value, zone)
     return f"{long_date(local.date())}, {clock_time(local)}"
+
+
+def start_of_day(value):
+    """Midnight at the start of a date, in Philippine time, so dates and times can be sorted together."""
+    return timezone.make_aware(datetime.combine(value, time.min))
+
+
+def day_count(days):
+    """Like "1 day" or "21 days"."""
+    unit = "day" if days == 1 else "days"
+    return f"{days} {unit}"

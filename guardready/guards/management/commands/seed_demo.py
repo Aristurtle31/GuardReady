@@ -10,7 +10,8 @@ All dates are relative to today, so the mix stays the same on any day:
 A 9th guard resigned months ago, so the "Guards who left" filter and the
 status history have something to show. He is not counted.
 The agency's own License to Operate expires in 5 days (notice band 7), so
-the dashboard warns about it.
+the dashboard warns about it. At the end it runs check_expiry(), so the
+notifications page and the dashboard banner have notices to show.
 """
 
 import random
@@ -27,7 +28,13 @@ from deployment.models import Assignment, ClientSite, Post
 from guards import constants as c
 from guards.dates import add_months
 from guards.models import AgencyPermit, Credential, Guard
-from guards.services import all_guards, current_guards, readiness_counts
+from guards.services import (
+    all_guards,
+    check_expiry,
+    current_guards,
+    notice_summary,
+    readiness_counts,
+)
 from reports.constants import LATE_GRACE_MINUTES
 from reports.models import AttendanceRecord, Evaluation
 
@@ -270,6 +277,8 @@ class Command(BaseCommand):
             self.stdout.write(f"  {level}: {count}")
         self.stdout.write(f"  Guards who left (not counted): {len(guards) - len(current)}")
         self.stdout.write(f"  Agency {lto.name()}: {lto.expiry_text()}")
+        # The same check as "python manage.py check_expiry". Safe to rerun.
+        self.stdout.write(f"  Expiry check: {notice_summary(check_expiry())}")
 
     # --- Groups and users ---
 

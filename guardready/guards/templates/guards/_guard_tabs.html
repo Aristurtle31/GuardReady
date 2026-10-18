@@ -1,0 +1,26 @@
+{# Tab-style links above a guard's pages. Each tab is its own page, so no JavaScript is needed. #}
+<ul class="nav nav-tabs mb-3">
+  <li class="nav-item">
+    {% if active == "profile" %}
+      <a class="nav-link active" aria-current="page" href="{% url 'guard_profile' guard.pk %}">Profile</a>
+    {% else %}
+      <a class="nav-link" href="{% url 'guard_profile' guard.pk %}">Profile</a>
+    {% endif %}
+  </li>
+  <li class="nav-item">
+    {% if active == "history" %}
+      <a class="nav-link active" aria-current="page" href="{% url 'guard_history' guard.pk %}">History</a>
+    {% else %}
+      <a class="nav-link" href="{% url 'guard_history' guard.pk %}">History</a>
+    {% endif %}
+  </li>
+  {% if perms.reports.view_summary_report %}
+    <li class="nav-item">
+      {% if active == "report" %}
+        <a class="nav-link active" aria-current="page" href="{% url 'guard_report' guard.pk %}">Report</a>
+      {% else %}
+        <a class="nav-link" href="{% url 'guard_report' guard.pk %}">Report</a>
+      {% endif %}
+    </li>
+  {% endif %}
+</ul>

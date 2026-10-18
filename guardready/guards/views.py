@@ -1,17 +1,21 @@
 """
-Dashboard, guard list, add and edit guard, documents, guard profile, and the
-agency's own permits.
+Dashboard, guard list, add and edit guard, documents, guard profile and its
+History tab, the agency's own permits, and the expiry notices.
 
 Views only check access, call forms, services and model methods, and render
 a template. Saving lives in guards/services.py.
 """
 
 from datetime import timedelta
+from urllib.parse import urlencode
 
 from django.contrib import messages
+from django.core.exceptions import ValidationError
 from django.http import Http404
 from django.shortcuts import get_object_or_404, redirect, render
+from django.urls import reverse
 from django.utils import timezone
+from django.views.decorators.http import require_POST
 
 from accounts.access import (
     access_required,
@@ -22,6 +26,7 @@ from accounts.access import (
     own_guard,
 )
 from accounts.stepup import is_unlocked, seconds_left
+from audit.history import history_for
 from audit.models import AuditEntry
 from audit.services import log_event, mark_target
 
@@ -37,13 +42,24 @@ from .forms import (
     add_form_class,
     renew_form_class,
 )
-from .models import PERMIT_TYPES, AgencyPermit, AgencyPermitVersion, Credential, Guard
+from .models import (
+    NOTICE_TYPES,
+    PERMIT_TYPES,
+    AgencyPermit,
+    AgencyPermitVersion,
+    Credential,
+    ExpiryNotice,
+    Guard,
+)
 from .services import (
     all_guards,
     current_guards,
     employment_counts,
     filter_by_employment,
     filter_by_readiness,
+    find_notices,
+    mark_all_notices_seen,
+    mark_notice_seen,
     readiness_counts,
     save_guard_edit,
     save_new_document,
@@ -53,6 +69,7 @@ from .services import (
     save_renewal,
     save_status_change,
     search_guards,
+    urgent_notices,
 )
 
 
@@ -74,6 +91,8 @@ def dashboard(request):
         "show_left": c.SHOW_LEFT,
         # The agency's own License to Operate: valid until a date, or a warning.
         "lto": AgencyPermit.overview(c.LTO),
+        # The banner: open notices in the 7 day, 1 day and expired bands.
+        "urgent": urgent_notices(),
     }
     return render(request, "guards/dashboard.html", context)
 
@@ -452,6 +471,88 @@ def renew_permit(request, kind):
 
 
 # ---------------------------------------------------------------------------
+# Expiry notices (Stage 2)
+# ---------------------------------------------------------------------------
+
+
+def read_band(text):
+    """The band filter, like "7". Anything else means every band."""
+    bands = {str(band): band for band in c.NOTICE_BAND_LABELS}
+    return bands.get(text)
+
+
+def notice_filters(data):
+    """The three filters of the notifications page, from GET or from the POST of a button."""
+    return {
+        "status": data.get("status", ExpiryNotice.DEFAULT_FILTER),
+        "band": data.get("band", ""),
+        "about": data.get("about", ""),
+    }
+
+
+def back_to_notifications(request):
+    """Return to the notifications page with the same filters."""
+    return redirect(f"{reverse('notifications')}?{urlencode(notice_filters(request.POST))}")
+
+
+@access_required("guards.manage_credentials")
+def notifications(request):
+    """
+    Guard and agency notices together, with filters. Open notices of guards
+    who left are hidden. Notices are made by check_expiry(), never here.
+    """
+    mark_target(request, "Notification", "all")
+    filters = notice_filters(request.GET)
+    notices = find_notices(filters["status"], read_band(filters["band"]), filters["about"])
+    context = {
+        "notices": notices,
+        "filters": filters,
+        "status_filters": ExpiryNotice.STATUS_FILTERS,
+        "bands": c.NOTICE_BAND_LABELS,
+        "about_filters": {kind: notice_class.ABOUT for kind, notice_class in NOTICE_TYPES.items()},
+        "new_count": len(find_notices("new")),
+    }
+    return render(request, "guards/notifications.html", context)
+
+
+@access_required("guards.manage_credentials")
+@require_POST
+def notice_seen(request, kind, pk):
+    """Mark one notice as seen. kind picks the notice class from NOTICE_TYPES."""
+    notice_class = NOTICE_TYPES.get(kind)
+    if notice_class is None:
+        raise Http404("There is no notice of that kind.")
+    notice = get_object_or_404(notice_class.with_details(notice_class.objects.all()), pk=pk)
+    try:
+        mark_notice_seen(request, notice)
+        messages.success(request, "The notice was marked as seen.")
+    except ValidationError as error:
+        problem = " ".join(error.messages)
+        log_event(
+            request,
+            AuditEntry.UPDATE,
+            notice_class.__name__,
+            notice.pk,
+            outcome=AuditEntry.DENIED,
+            details=f"Refused, nothing was changed. {problem}",
+        )
+        messages.info(request, problem)
+    return back_to_notifications(request)
+
+
+@access_required("guards.manage_credentials")
+@require_POST
+def all_notices_seen(request):
+    """Mark every shown New notice as seen."""
+    notices = mark_all_notices_seen(request)
+    if notices:
+        messages.success(request, f"{len(notices)} new notices were marked as seen.")
+    else:
+        messages.info(request, "There are no new notices.")
+    return back_to_notifications(request)
+
+
+# ---------------------------------------------------------------------------
 # My record and the guard profile
 # ---------------------------------------------------------------------------
 
@@ -472,7 +573,7 @@ def guard_profile(request, pk):
     )
     # Zero Trust: checked on the object itself, not just hidden from the menu.
     if not can_view_guard(request.user, guard):
-        deny(request, "A guard can only open his own records.", "Guard", guard.pk)
+        deny(request, "A guard can only open their own records.", "Guard", guard.pk)
 
     unlocked = is_unlocked(request, guard)
     mark_target(request, "Guard", guard.pk, sensitive=unlocked)
@@ -486,6 +587,8 @@ def guard_profile(request, pk):
         "block_reasons": guard.block_reasons(),
         "earliest": guard.earliest_expiry(),
         "assignment": guard.current_assignment(),
+        # Stage 3: every posting, newest first (the Postings table).
+        "postings": guard.assignments.select_related("post__site", "assigned_by"),
         "rows": guard.credential_rows(unlocked),
         "unlocked": unlocked,
         "can_unlock": can_step_up(request.user, guard),
@@ -494,3 +597,25 @@ def guard_profile(request, pk):
         "locks_at": timezone.localtime() + timedelta(seconds=left),
     }
     return render(request, "guards/guard_profile.html", context)
+
+
+@access_required("guards.view_all_guards", "guards.view_own_record")
+def guard_history(request, pk):
+    """
+    The History tab: postings, refused postings, document changes and expiry
+    notices, newest first. history_for() asks each HistoryEvent class for its
+    own events. Same access as the profile, so a guard sees only his own.
+    Nothing sensitive is shown, so no step-up is needed.
+    """
+    guard = get_object_or_404(Guard, pk=pk)
+    if not can_view_guard(request.user, guard):
+        deny(request, "A guard can only open their own records.", "Guard", guard.pk)
+    mark_target(request, "Guard", guard.pk)
+
+    context = {
+        "guard": guard,
+        "readiness": guard.readiness(),
+        "employment": guard.employment_status(),
+        "rows": [event.row() for event in history_for(guard)],
+    }
+    return render(request, "guards/guard_history.html", context)

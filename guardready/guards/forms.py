@@ -500,7 +500,7 @@ class StatusChangeForm(forms.Form):
     effective_date = forms.DateField(
         label="Effective date",
         widget=date_input(),
-        help_text="Not in the future, not before he was hired, and not before his last change.",
+        help_text="Not in the future, not before the hire date, and not before the last change.",
         error_messages={"required": "Enter the effective date."},
     )
 
