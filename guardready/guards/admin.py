@@ -1,3 +1,5 @@
+"""Read-only admin screens for the superuser."""
+
 from django.contrib import admin
 
 from audit.admin import ReadOnlyAdmin
